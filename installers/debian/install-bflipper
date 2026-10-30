@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+UPSTREAM_REF="1d26683ff5b751f219a4e40443b7c8355eb39469"
+PATCH_DIR="/usr/share/bflipper-installer/patches"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bflipper.XXXXXX")"
+PREFIX="$HOME/.local/opt/BFlipper"
+BUILD_DEPS=(
+  build-essential ca-certificates git pkg-config qmake6 qt6-base-dev
+  qt6-declarative-dev qt6-svg-dev qt6-serialport-dev qt6-connectivity-dev
+  qt6-5compat-dev qt6-l10n-tools libusb-1.0-0-dev zlib1g-dev bluez
+)
+
+cleanup() { rm -rf "$WORK_DIR"; }
+trap cleanup EXIT
+
+if ! command -v qFlipper >/dev/null 2>&1 && ! dpkg-query -W -f='${Status}' qflipper 2>/dev/null | grep -q 'install ok installed'; then
+  echo "Install the official qFlipper app first, then run this installer again." >&2
+  exit 1
+fi
+
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "sudo is required to install build dependencies." >&2
+  exit 1
+fi
+
+sudo apt-get update
+sudo apt-get install -y "${BUILD_DEPS[@]}"
+
+git clone --recurse-submodules https://github.com/flipperdevices/qFlipper.git "$WORK_DIR/source"
+git -C "$WORK_DIR/source" checkout "$UPSTREAM_REF"
+git -C "$WORK_DIR/source" submodule update --init --recursive
+for patch in "$PATCH_DIR"/*.patch; do
+  git -C "$WORK_DIR/source" apply --whitespace=nowarn "$patch"
+done
+
+mkdir -p "$WORK_DIR/source/build-bflipper"
+cd "$WORK_DIR/source/build-bflipper"
+qmake6 ../qFlipper.pro -spec linux-g++ CONFIG+="release qtquickcompiler" PREFIX="$PREFIX" DEFINES+=DISABLE_APPLICATION_UPDATES
+make qmake_all
+make -j"$(nproc)"
+make install
+
+mkdir -p "$HOME/.local/share/applications" "$HOME/.local/bin"
+cat > "$HOME/.local/share/applications/bflipper.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=BFlipper
+Comment=Bluetooth-enabled Flipper Zero desktop app
+Exec=$PREFIX/bin/qFlipper
+Icon=$PREFIX/share/icons/hicolor/512x512/apps/qFlipper.png
+Terminal=false
+Categories=Utility;
+EOF
+ln -sf "$PREFIX/bin/qFlipper" "$HOME/.local/bin/bflipper"
+
+echo "BFlipper is installed side-by-side with qFlipper. Launch it from the app menu or run: $HOME/.local/bin/bflipper"

@@ -1,0 +1,99 @@
+diff --git a/build_mac.sh b/build_mac.sh
+index 781d65c..e50c967 100755
+--- a/build_mac.sh
++++ b/build_mac.sh
+@@ -16,29 +16,46 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
+     exit 1;
+ fi
+ 
+-if [[ "$(uname -m)" == "arm64" ]]; then
+-    eval "$(/opt/homebrew/bin/brew shellenv)";
+-else
+-    eval "$(/usr/local/Homebrew/bin/brew shellenv)";
++BREW="$(command -v brew || true)"
++if [[ -z "$BREW" ]]; then
++    if [[ "$(uname -m)" == "arm64" ]]; then
++        BREW="/opt/homebrew/bin/brew"
++    else
++        BREW="/usr/local/bin/brew"
++    fi
+ fi
++eval "$("$BREW" shellenv)";
+ 
+ if ! brew --version; then
+     echo "Brew isn't installed!";
+     exit 1;
+ fi
+ 
+-if ! brew --prefix libusb_universal; then
+-    echo "Please install libusb_universal first!";
+-    printf "\tbrew install flipperdevices/homebrew-flipper/libusb_universal\n";
++LIBUSB_FORMULA="libusb"
++QT_FORMULA="qt"
++if ! brew --prefix "$LIBUSB_FORMULA" >/dev/null 2>&1; then
++    LIBUSB_FORMULA="libusb_universal"
++fi
++if ! brew --prefix "$LIBUSB_FORMULA" >/dev/null 2>&1; then
++    echo "Please install libusb first!";
++    printf "\tbrew install libusb\n";
+     exit 1;
+ fi
+ 
+-if ! brew --prefix qt_universal; then
+-    echo "Please install qt_universal first!";
+-    printf "\tbrew install flipperdevices/homebrew-flipper/qt_universal\n";
++if ! brew --prefix "$QT_FORMULA" >/dev/null 2>&1; then
++    QT_FORMULA="qt_universal"
++fi
++if ! brew --prefix "$QT_FORMULA" >/dev/null 2>&1; then
++    echo "Please install Qt first!";
++    printf "\tbrew install qt\n";
+     exit 1;
+ fi
+ 
++LIBUSB_PREFIX="$(brew --prefix "$LIBUSB_FORMULA")"
++QT_PREFIX="$(brew --prefix "$QT_FORMULA")"
++export PATH="$QT_PREFIX/bin:$PATH"
++export PKG_CONFIG_PATH="$LIBUSB_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
++
+ rm -rf "$BUILD_DIRECTORY";
+ mkdir "$BUILD_DIRECTORY";
+ 
+@@ -49,7 +66,7 @@ qmake \
+     CONFIG+="release qtquickcompiler" \
+     -o Makefile \
+     ../$PROJECT.pro \
+-    QMAKE_APPLE_DEVICE_ARCHS="x86_64 arm64" \
++    QMAKE_APPLE_DEVICE_ARCHS="$(uname -m)" \
+     -early QMAKE_DEFAULT_LIBDIRS="$(xcrun -show-sdk-path)/usr/lib";
+ 
+ make qmake_all;
+@@ -58,7 +75,7 @@ make install;
+ 
+ # bundle libusb
+ mkdir -p "$PROJECT.app/Contents/Frameworks";
+-cp "$(brew --prefix libusb_universal)/lib/libusb-1.0.0.dylib" "$PROJECT.app/Contents/Frameworks";
++cp "$LIBUSB_PREFIX/lib/libusb-1.0.0.dylib" "$PROJECT.app/Contents/Frameworks";
+ 
+ relink_framework()
+ {
+@@ -107,5 +124,5 @@ fi
+ dmgbuild \
+     -s "../installer-assets/macos/dmgbuild-config.py" \
+     -D "app=$PROJECT.app" \
+-    "$PROJECT-$(git describe --tags --abbrev=0)" \
++    "$PROJECT-$(git describe --tags --abbrev=0 2>/dev/null || echo ble)" \
+     "$PROJECT.dmg";
+diff --git a/qflipper_common.pri b/qflipper_common.pri
+index 6266bad..93cd9af 100644
+--- a/qflipper_common.pri
++++ b/qflipper_common.pri
+@@ -19,7 +19,7 @@ unix:!macx {
+ 
+ } else:macx {
+     DEFINES += USB_BACKEND_LIBUSB
+-    PKG_CONFIG = /opt/homebrew/bin/pkg-config
++    PKG_CONFIG = $$system("command -v pkg-config")
+     CONFIG += link_pkgconfig
+     PKGCONFIG += libusb-1.0 zlib
+ 

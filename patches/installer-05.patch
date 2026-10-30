@@ -1,0 +1,323 @@
+diff --git a/application/bletransport.h b/application/bletransport.h
+new file mode 100644
+index 0000000..d34263d
+--- /dev/null
++++ b/application/bletransport.h
+@@ -0,0 +1,77 @@
++#pragma once
++
++#include "flipperzero/flippertransport.h"
++
++#include <QByteArray>
++#include <QString>
++#include <QBluetoothDeviceInfo>
++#include <QBluetoothUuid>
++#include <QLowEnergyController>
++#include <QLowEnergyService>
++#include <QLowEnergyCharacteristic>
++#include <QLowEnergyDescriptor>
++
++// FlipperTransport over Bluetooth LE. Speaks the Flipper's Serial GATT service,
++// which carries the exact same RPC/protobuf byte stream as USB CDC, so once the
++// link is up, ProtobufSession neither knows nor cares that it is wireless.
++//
++// Distilled from the ble-spike (proven ping/pong on real hardware). The important
++// firmware quirks, all baked in below:
++//   * TX (Flipper -> us) is INDICATE, not Notify -> enable with 0x0200, not 0x0100.
++//   * The serial channel is inert until RPC is activated by writing 0x01 to the
++//     rpc-status characteristic. We wait for THAT write to complete before firing
++//     opened(), because the session sends its first RPC frame the instant it does.
++//   * Outgoing frames are chunked to the negotiated ATT MTU and paced on
++//     characteristicWritten so we never outrun the Flipper's RX buffer.
++class BleTransport : public Flipper::Zero::FlipperTransport
++{
++    Q_OBJECT
++
++public:
++    explicit BleTransport(const QBluetoothDeviceInfo &device, QObject *parent = nullptr);
++    ~BleTransport() override;
++
++    bool open() override;          // async: connect + GATT handshake -> opened()/openFailed()
++    void close() override;
++    qint64 write(const QByteArray &data) override;
++    QByteArray readAll() override;
++    void clear() override;
++    bool flush() override;
++    QString errorString() const override;
++
++private:
++    void fail(const QString &why);   // pre-open -> openFailed(); post-open -> errorOccurred()
++    void finishOpen();               // handshake complete -> opened()
++    void activateRpc();              // write rpc-status = 1
++    void pumpTx();                   // drain m_outgoing over the RX characteristic
++
++    void onDiscoveryFinished();
++    void onServiceStateChanged(QLowEnergyService::ServiceState s);
++    void onDescriptorWritten(const QLowEnergyDescriptor &d, const QByteArray &value);
++    void onCharacteristicWritten(const QLowEnergyCharacteristic &c, const QByteArray &value);
++    void onCharacteristicChanged(const QLowEnergyCharacteristic &c, const QByteArray &value);
++
++    // The Flipper's Serial GATT service + characteristics (from firmware).
++    static const QBluetoothUuid kSerialService;
++    static const QBluetoothUuid kTxChar;       // indicate: Flipper -> us
++    static const QBluetoothUuid kRxChar;       // write:    us -> Flipper
++    static const QBluetoothUuid kFlowControl;  // notify:   Flipper's free RX buffer
++    static const QBluetoothUuid kRpcStatus;    // write 0x01 to activate RPC
++
++    QBluetoothDeviceInfo      m_device;
++    QLowEnergyController     *m_ctrl = nullptr;
++    QLowEnergyService        *m_serial = nullptr;
++    QLowEnergyCharacteristic  m_rx;          // cached write endpoint
++
++    QByteArray m_incoming;                   // received, awaiting readAll()
++    QByteArray m_outgoing;                   // queued for transmission
++    bool m_rxWithResponse = true;            // pace writes on characteristicWritten
++    bool m_writing = false;                  // a chunk write is in flight
++    int  m_mtu = 20;                         // ATT write payload (updated on connect)
++
++    int  m_handshakeStep = 0;                // 0 idle, 1 TX-cccd, 2 flow-cccd, 3 rpc, 4 open
++    bool m_opened = false;
++    bool m_failed = false;
++    bool m_closing = false;
++    QString m_error;
++};
+diff --git a/application/components/NoDeviceOverlay.qml b/application/components/NoDeviceOverlay.qml
+index d4da985..6f734f6 100644
+--- a/application/components/NoDeviceOverlay.qml
++++ b/application/components/NoDeviceOverlay.qml
+@@ -20,7 +20,7 @@ Item {
+         id: usbPlug
+ 
+         x: parent.width - 216
+-        y: 145
++        y: 92
+ 
+         source: "qrc:/assets/gfx/images/typec.svg"
+         sourceSize: Qt.size(159, 37)
+@@ -29,7 +29,7 @@ Item {
+     TextLabel {
+         id: connectMsg
+         anchors.horizontalCenter: parent.horizontalCenter
+-        y: 264
++        y: 176
+ 
+         color: Theme.color.lightorange2
+         text: qsTr("Connect your Flipper")
+@@ -38,6 +38,94 @@ Item {
+         font.pixelSize: 48
+     }
+ 
++    Rectangle {
++        id: bleConnectButton
++        anchors.horizontalCenter: parent.horizontalCenter
++        y: 242
++        width: 230
++        height: 38
++        radius: 3
++        color: bleMouse.containsMouse ? Theme.color.mediumorange2 : "transparent"
++        border.width: 1
++        border.color: Theme.color.lightorange2
++
++        TextLabel {
++            anchors.centerIn: parent
++            color: Theme.color.lightorange2
++            text: Ble.scanning ? qsTr("Scanning for Flippers…") : qsTr("Connect over Bluetooth")
++            font.pixelSize: 16
++        }
++
++        MouseArea {
++            id: bleMouse
++            anchors.fill: parent
++            hoverEnabled: true
++            enabled: !Ble.scanning
++            cursorShape: enabled ? Qt.PointingHandCursor : Qt.WaitCursor
++            onClicked: {
++                bleError.text = ""
++                Ble.scan()
++            }
++        }
++    }
++
++    ListView {
++        id: bleResults
++        anchors.horizontalCenter: parent.horizontalCenter
++        y: 289
++        width: 440
++        height: 90
++        clip: true
++        spacing: 4
++        model: Ble.devices
++
++        delegate: Rectangle {
++            width: bleResults.width
++            height: 28
++            radius: 3
++            color: deviceMouse.containsMouse ? Theme.color.mediumorange2 : "#252525"
++
++            Text {
++                anchors.left: parent.left
++                anchors.leftMargin: 10
++                anchors.right: parent.right
++                anchors.rightMargin: 10
++                anchors.verticalCenter: parent.verticalCenter
++                color: Theme.color.lightorange2
++                text: modelData.name + "  ·  " + modelData.address
++                font.family: "Helvetica Neue"
++                font.pixelSize: 13
++                elide: Text.ElideRight
++                verticalAlignment: Text.AlignVCenter
++            }
++
++            MouseArea {
++                id: deviceMouse
++                anchors.fill: parent
++                hoverEnabled: true
++                cursorShape: Qt.PointingHandCursor
++                onClicked: {
++                    bleError.text = qsTr("Connecting to %1…").arg(modelData.name)
++                    Ble.connectDevice(index)
++                }
++            }
++        }
++
++        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
++    }
++
++    TextLabel {
++        id: bleError
++        anchors.horizontalCenter: parent.horizontalCenter
++        y: bleResults.y + bleResults.height + 2
++        width: 440
++        horizontalAlignment: Text.AlignHCenter
++        color: Theme.color.lightorange2
++        text: Ble.status.split("\n").filter(function(line) { return line.length > 0 }).slice(-1)[0] || ""
++        font.pixelSize: 12
++        wrapMode: Text.WordWrap
++    }
++
+     Image {
+         id: spinner
+ 
+diff --git a/backend/backend.pro b/backend/backend.pro
+index 21f50bb..118184f 100644
+--- a/backend/backend.pro
++++ b/backend/backend.pro
+@@ -22,6 +22,7 @@ SOURCES += \
+     flipperzero/assetmanifest.cpp \
+     flipperzero/filemanager.cpp \
+     flipperzero/protobufsession.cpp \
++    flipperzero/serialtransport.cpp \
+     flipperzero/rpc/abstractprotobufoperation.cpp \
+     flipperzero/rpc/abstractstorageoperation.cpp \
+     flipperzero/rpc/guiscreenframeoperation.cpp \
+@@ -133,6 +134,8 @@ HEADERS += \
+     flipperzero/pixmaps/updateok.h \
+     flipperzero/pixmaps/updating.h \
+     flipperzero/protobufsession.h \
++    flipperzero/flippertransport.h \
++    flipperzero/serialtransport.h \
+     flipperzero/rpc/abstractprotobufoperation.h \
+     flipperzero/rpc/abstractstorageoperation.h \
+     flipperzero/rpc/guiscreenframeoperation.h \
+diff --git a/backend/deviceregistry.cpp b/backend/deviceregistry.cpp
+index bc2d594..e350d38 100644
+--- a/backend/deviceregistry.cpp
++++ b/backend/deviceregistry.cpp
+@@ -3,10 +3,13 @@
+ #include <QDebug>
+ #include <QMetaObject>
+ #include <QLoggingCategory>
++#include <algorithm>
++#include <memory>
+ 
+ #include "flipperzero/helper/deviceinfohelper.h"
+ #include "flipperzero/flipperzero.h"
+ #include "flipperzero/devicestate.h"
++#include "flipperzero/protobufsession.h"
+ 
+ #include "usbdevice.h"
+ 
+@@ -50,6 +53,13 @@ int DeviceRegistry::deviceCount() const
+     return m_devices.size();
+ }
+ 
++bool DeviceRegistry::hasBleDevice() const
++{
++    return std::any_of(m_devices.begin(), m_devices.end(), [](FlipperZero *device) {
++        return device->deviceState()->deviceInfo().isBle;
++    });
++}
++
+ BackendError::ErrorType DeviceRegistry::error() const
+ {
+     return m_error;
+@@ -133,6 +143,40 @@ void DeviceRegistry::removeOfflineDevices()
+     }
+ }
+ 
++void DeviceRegistry::connectBleDevice(const QString &name, const Zero::TransportFactory &factory)
++{
++    if(!factory || m_isQueryInProgress) {
++        return;
++    }
++
++    if(hasBleDevice()) {
++        removeBleDevice();
++    }
++
++    setQueryInProgress(true);
++    auto *fetcher = new Zero::VCPDeviceInfoHelper(USBDeviceInfo(), this);
++    fetcher->setBleTransport(name, factory);
++    connect(fetcher, &Zero::AbstractDeviceInfoHelper::finished, this, &DeviceRegistry::processDevice);
++    connect(fetcher, &Zero::AbstractDeviceInfoHelper::finished, fetcher, &QObject::deleteLater);
++}
++
++void DeviceRegistry::removeBleDevice()
++{
++    const auto it = std::find_if(m_devices.begin(), m_devices.end(), [](FlipperZero *device) {
++        return device->deviceState()->deviceInfo().isBle;
++    });
++    if(it == m_devices.end()) {
++        return;
++    }
++
++    auto *device = *it;
++    device->deviceState()->setOnline(false);
++    m_devices.erase(it);
++    device->deleteLater();
++    emit deviceCountChanged();
++    emit currentDeviceChanged();
++}
++
+ void DeviceRegistry::processDevice()
+ {
+     setQueryInProgress(false);
+@@ -147,7 +191,8 @@ void DeviceRegistry::processDevice()
+     }
+ 
+     const auto it = std::find_if(m_devices.begin(), m_devices.end(), [&info](Flipper::FlipperZero *arg) {
+-        return info.name == arg->deviceState()->name();
++        const auto &oldInfo = arg->deviceState()->deviceInfo();
++        return info.isBle == oldInfo.isBle && info.name == oldInfo.name;
+     });
+ 
+     if(it != m_devices.end()) {
+@@ -161,6 +206,18 @@ void DeviceRegistry::processDevice()
+         auto *device = new FlipperZero(info, this);
+         m_devices.append(device);
+ 
++        if(info.isBle) {
++            auto *rpc = device->rpc();
++            auto wasUp = std::make_shared<bool>(false);
++            connect(rpc, &Zero::ProtobufSession::sessionStateChanged, this, [this, rpc, wasUp]() {
++                if(rpc->isSessionUp()) {
++                    *wasUp = true;
++                } else if(*wasUp) {
++                    removeBleDevice();
++                }
++            });
++        }
++
+         emit deviceCountChanged();
+ 
+         if(m_devices.size() == 1) {

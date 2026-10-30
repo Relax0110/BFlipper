@@ -1,0 +1,208 @@
+diff --git a/backend/deviceregistry.h b/backend/deviceregistry.h
+index 27fb49c..7f52e68 100644
+--- a/backend/deviceregistry.h
++++ b/backend/deviceregistry.h
+@@ -5,6 +5,7 @@
+ 
+ #include "backenderror.h"
+ #include "usbdeviceinfo.h"
++#include "flipperzero/deviceinfo.h"
+ 
+ class USBDeviceDetector;
+ 
+@@ -25,6 +26,7 @@ public:
+ 
+     FlipperZero *currentDevice() const;
+     int deviceCount() const;
++    bool hasBleDevice() const;
+ 
+     BackendError::ErrorType error() const;
+     void clearError();
+@@ -41,6 +43,8 @@ public slots:
+     void insertDevice(const USBDeviceInfo &info);
+     void removeDevice(const USBDeviceInfo &info);
+     void removeOfflineDevices();
++    void connectBleDevice(const QString &name, const Flipper::Zero::TransportFactory &factory);
++    void removeBleDevice();
+ 
+ private slots:
+     void processDevice();
+diff --git a/backend/flipperzero/deviceinfo.h b/backend/flipperzero/deviceinfo.h
+index deaa18b..adb1cd0 100644
+--- a/backend/flipperzero/deviceinfo.h
++++ b/backend/flipperzero/deviceinfo.h
+@@ -1,7 +1,9 @@
+ #pragma once
+ 
+ #include <QString>
++#include <functional>
+ #include <QDateTime>
++#include <QObject>
+ #include <QSerialPortInfo>
+ 
+ #include "deviceregion.h"
+@@ -13,6 +15,9 @@ class QSerialPort;
+ namespace Flipper {
+ namespace Zero {
+ 
++class FlipperTransport;
++using TransportFactory = std::function<FlipperTransport*(QObject *parent)>;
++
+ struct HardwareInfo {
+     Q_GADGET
+     Q_PROPERTY(QString version MEMBER version)
+@@ -106,6 +111,8 @@ public:
+ 
+     USBDeviceInfo usbInfo;
+     QSerialPortInfo portInfo;
++    TransportFactory transportFactory;
++    bool isBle = false;
+ };
+ 
+ }
+diff --git a/backend/flipperzero/flippertransport.h b/backend/flipperzero/flippertransport.h
+new file mode 100644
+index 0000000..02a2064
+--- /dev/null
++++ b/backend/flipperzero/flippertransport.h
+@@ -0,0 +1,61 @@
++#pragma once
++
++#include <QObject>
++#include <QString>
++#include <QByteArray>
++
++namespace Flipper {
++namespace Zero {
++
++// Abstracts the raw byte transport beneath ProtobufSession so a Flipper can be
++// reached over USB serial OR Bluetooth LE. It mirrors exactly the slice of
++// QSerialPort that ProtobufSession relied on (the readyRead/bytesWritten/
++// errorOccurred signals + write/readAll/clear/flush/close/errorString), so the
++// session becomes transport-agnostic with a near-mechanical swap.
++//
++//   SerialTransport: wraps QSerialPort (USB CDC), unchanged behaviour.
++//   BleTransport:    the Flipper's Serial GATT service over BLE (see the
++//                      ble-spike branch for the proven ping/pong).
++class FlipperTransport : public QObject
++{
++    Q_OBJECT
++
++public:
++    explicit FlipperTransport(QObject *parent = nullptr) : QObject(parent) {}
++    ~FlipperTransport() override = default;
++
++    // Open/close the underlying link.
++    //
++    // For a synchronous link (USB serial) open() returns true once the port is
++    // ready and callers may proceed immediately. For an asynchronous link (BLE,
++    // whose scan/connect/GATT-discovery take time) open() returns true to mean
++    // "kicked off successfully" and the transport later emits opened() when it is
++    // actually ready to carry RPC, or openFailed() if it could not connect.
++    // A false return (or openFailed) sets errorString.
++    virtual bool open() = 0;
++    virtual void close() = 0;
++
++    // Queue bytes for transmission; returns the number accepted (like QIODevice::write).
++    virtual qint64 write(const QByteArray &data) = 0;
++
++    // Drain everything received so far.
++    virtual QByteArray readAll() = 0;
++
++    // Discard any buffered in/out data (QSerialPort::clear equivalent).
++    virtual void clear() = 0;
++
++    // Ensure queued writes have actually gone out; returns false on failure.
++    virtual bool flush() = 0;
++
++    virtual QString errorString() const = 0;
++
++signals:
++    void opened();                     // async link is now ready to carry RPC
++    void openFailed(const QString &e); // async link could not be established
++    void readyRead();                  // new bytes available -> readAll()
++    void bytesWritten(qint64 n);       // n bytes physically sent
++    void errorOccurred();              // link error; inspect errorString()
++};
++
++}
++}
+diff --git a/backend/flipperzero/flipperzero.cpp b/backend/flipperzero/flipperzero.cpp
+index 08a1c27..0c454b0 100644
+--- a/backend/flipperzero/flipperzero.cpp
++++ b/backend/flipperzero/flipperzero.cpp
+@@ -230,13 +230,19 @@ void FlipperZero::onDeviceInfoChanged()
+ 
+     const auto &pb = deviceInfo.protobuf;
+     const auto &pi = deviceInfo.portInfo;
++    const auto transportFactory = deviceInfo.transportFactory;
+ 
+     m_rpc->setMajorVersion(pb.versionMajor);
+     m_rpc->setMinorVersion(pb.versionMinor);
+-    m_rpc->setSerialPort(pi);
++    if(transportFactory) {
++        m_rpc->setTransport(transportFactory(m_rpc));
++    } else {
++        m_rpc->setSerialPort(pi);
++    }
+ 
+-    // 100 ms delay to prevent race condition in Flipper
+-    QTimer::singleShot(100, m_rpc, &ProtobufSession::startSession);
++    // Give the device a moment before reopening the BLE RPC pipe after the
++    // bootstrap query has closed its connection.
++    QTimer::singleShot(transportFactory ? 3000 : 100, m_rpc, &ProtobufSession::startSession);
+ }
+ 
+ void FlipperZero::onSessionStatusChanged()
+diff --git a/backend/flipperzero/helper/deviceinfohelper.cpp b/backend/flipperzero/helper/deviceinfohelper.cpp
+index d16011b..40808bf 100644
+--- a/backend/flipperzero/helper/deviceinfohelper.cpp
++++ b/backend/flipperzero/helper/deviceinfohelper.cpp
+@@ -61,11 +61,23 @@ VCPDeviceInfoHelper::VCPDeviceInfoHelper(const USBDeviceInfo &info, QObject *par
+     m_deviceInfo.usbInfo = info;
+ }
+ 
++void VCPDeviceInfoHelper::setBleTransport(const QString &name, const TransportFactory &factory)
++{
++    m_deviceInfo.isBle = true;
++    m_deviceInfo.name = name;
++    m_deviceInfo.transportFactory = factory;
++}
++
+ void VCPDeviceInfoHelper::nextStateLogic()
+ {
+     if(state() == AbstractDeviceInfoHelper::Ready) {
+-        setState(VCPDeviceInfoHelper::FindingSerialPort);
+-        findSerialPort();
++        if(m_deviceInfo.transportFactory) {
++            setState(VCPDeviceInfoHelper::StartingRPCSession);
++            startRPCSession();
++        } else {
++            setState(VCPDeviceInfoHelper::FindingSerialPort);
++            findSerialPort();
++        }
+ 
+     } else if(state() == VCPDeviceInfoHelper::FindingSerialPort) {
+         setState(VCPDeviceInfoHelper::StartingRPCSession);
+@@ -122,6 +134,9 @@ void VCPDeviceInfoHelper::findSerialPort()
+ void VCPDeviceInfoHelper::startRPCSession()
+ {
+     m_rpc = new ProtobufSession(m_deviceInfo.portInfo, this);
++    if(m_deviceInfo.transportFactory) {
++        m_rpc->setTransport(m_deviceInfo.transportFactory(m_rpc));
++    }
+     connect(m_rpc, &ProtobufSession::sessionStateChanged, this, &VCPDeviceInfoHelper::onSessionStatusChanged);
+     m_rpc->startSession();
+ }
+diff --git a/backend/flipperzero/helper/deviceinfohelper.h b/backend/flipperzero/helper/deviceinfohelper.h
+index 223f00d..b3d4d72 100644
+--- a/backend/flipperzero/helper/deviceinfohelper.h
++++ b/backend/flipperzero/helper/deviceinfohelper.h
+@@ -47,6 +47,7 @@ class VCPDeviceInfoHelper : public AbstractDeviceInfoHelper
+ 
+ public:
+     VCPDeviceInfoHelper(const USBDeviceInfo &info, QObject *parent = nullptr);
++    void setBleTransport(const QString &name, const TransportFactory &factory);
+ 
+ private:
+     void nextStateLogic() override;

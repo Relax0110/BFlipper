@@ -1,0 +1,145 @@
+diff --git a/3rdparty/3rdparty.pro b/3rdparty/3rdparty.pro
+index 44c31a2..87665b5 100644
+--- a/3rdparty/3rdparty.pro
++++ b/3rdparty/3rdparty.pro
+@@ -6,12 +6,12 @@ CONFIG += staticlib c++11
+ include(../qflipper_common.pri)
+ 
+ SOURCES += \
+-    nanopb/pb_common.c \
+-    nanopb/pb_decode.c \
+-    nanopb/pb_encode.c
++    $$PWD/nanopb/pb_common.c \
++    $$PWD/nanopb/pb_decode.c \
++    $$PWD/nanopb/pb_encode.c
+ 
+ HEADERS += \
+-    nanopb/pb.h \
+-    nanopb/pb_common.h \
+-    nanopb/pb_decode.h \
+-    nanopb/pb_encode.h
++    $$PWD/nanopb/pb.h \
++    $$PWD/nanopb/pb_common.h \
++    $$PWD/nanopb/pb_decode.h \
++    $$PWD/nanopb/pb_encode.h
+diff --git a/README.md b/README.md
+index 32a13a8..b05595a 100644
+--- a/README.md
++++ b/README.md
+@@ -18,6 +18,7 @@ Download official qFlipper builds here: [update.flipperzero.one](https://update.
+ * Stream Flipper's display and control it remotely
+ * Install firmware from a `.dfu` file
+ * Backup and restore settings, progress and pairing data
++* Connect to a Flipper Zero over Bluetooth Low Energy for RPC, file access, and screen control
+ * Automatic self-update feature
+ * Command line interface
+ 
+@@ -78,9 +79,15 @@ Build requirements:
+ 
+ - Xcode or command line tools
+ - Qt6 6.3.1 static universal from [Flipper brew tap](https://github.com/flipperdevices/homebrew-flipper)
++- Qt Bluetooth from Qt Connectivity (CoreBluetooth support enabled)
+ - libusb 1.0.24 universal from [Flipper brew tap](https://github.com/flipperdevices/homebrew-flipper)
+ - [dmgbuild](https://pypi.org/project/dmgbuild/) >= 1.5.2
+ 
++Over Bluetooth, turn Bluetooth on in the Flipper's Settings menu, then select
++**Connect over Bluetooth** on qFlipper's device screen. BLE supports normal RPC
++features such as file management and screen control; recovery and DFU firmware
++flashing still require USB.
++
+ If you want to sign binaries, set `SIGNING_KEY` environment variable:
+ 
+ 	export SIGNING_KEY="Your Developer Key ID"
+diff --git a/application/Info.plist.app b/application/Info.plist.app
+new file mode 100644
+index 0000000..660200f
+--- /dev/null
++++ b/application/Info.plist.app
+@@ -0,0 +1,26 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>CFBundleExecutable</key>
++	<string>qFlipper</string>
++	<key>CFBundleName</key>
++	<string>BFlipper</string>
++	<key>CFBundleDisplayName</key>
++	<string>BFlipper</string>
++	<key>CFBundleIconFile</key>
++	<string>qFlipper.icns</string>
++	<key>CFBundleIdentifier</key>
++	<string>com.bflipper.desktop</string>
++	<key>CFBundlePackageType</key>
++	<string>APPL</string>
++	<key>CFBundleSignature</key>
++	<string>????</string>
++	<key>LSMinimumSystemVersion</key>
++	<string>10.14</string>
++	<key>NSPrincipalClass</key>
++	<string>NSApplication</string>
++	<key>NSBluetoothAlwaysUsageDescription</key>
++	<string>BFlipper uses Bluetooth to connect to a Flipper Zero over BLE.</string>
++</dict>
++</plist>
+diff --git a/application/application.cpp b/application/application.cpp
+index 272380d..eb4b96d 100644
+--- a/application/application.cpp
++++ b/application/application.cpp
+@@ -122,6 +122,7 @@ void Application::initConnections()
+     connect(this, &QtSingleApplication::messageReceived, this, &Application::onMessageReceived);
+     connect(&m_updateRegistry, &Flipper::UpdateRegistry::latestVersionChanged, this, &Application::onLatestVersionChanged);
+     connect(&m_backend, &ApplicationBackend::currentDeviceChanged, this, &Application::onCurrentDeviceChanged);
++    m_ble.setDeviceRegistry(m_backend.deviceRegistry());
+ }
+ 
+ void Application::initCommandOptions()
+@@ -197,6 +198,7 @@ void Application::initQmlTypes()
+     qmlRegisterSingletonInstance("QFlipper", 1, 0, "Logger", globalLogger);
+     qmlRegisterSingletonInstance("QFlipper", 1, 0, "Preferences", globalPrefs);
+     qmlRegisterSingletonInstance("QFlipper", 1, 0, "Backend", &m_backend);
++    qmlRegisterSingletonInstance("QFlipper", 1, 0, "Ble", &m_ble);
+     qmlRegisterSingletonInstance("QFlipper", 1, 0, "App", this);
+     qmlRegisterSingletonInstance("QFlipper", 1, 0, "SystemFileDialog", &m_fileDialog);
+ }
+diff --git a/application/application.h b/application/application.h
+index e060f6b..6edf688 100644
+--- a/application/application.h
++++ b/application/application.h
+@@ -9,6 +9,7 @@
+ #include "applicationbackend.h"
+ #include "systemfiledialog.h"
+ #include "applicationupdateregistry.h"
++#include "blespike.h"
+ 
+ class Application : public QtSingleApplication
+ {
+@@ -72,6 +73,7 @@ private:
+     ApplicationUpdateRegistry m_updateRegistry;
+     SystemFileDialog m_fileDialog;
+     ApplicationBackend m_backend;
++    BleSpike m_ble;
+     QQmlApplicationEngine m_engine;
+ 
+     bool m_isDeveloperMode;
+diff --git a/application/application.pro b/application/application.pro
+index c8b2433..5e667e5 100644
+--- a/application/application.pro
++++ b/application/application.pro
+@@ -1,5 +1,16 @@
+ QT += quick serialport widgets quickcontrols2 svg
+ 
++# qFlipper's RPC protocol also runs over the Flipper Serial BLE GATT service.
++# Qt Bluetooth uses CoreBluetooth on macOS, BlueZ on Linux and WinRT on Windows.
++win32|linux|macx {
++    QT += bluetooth
++    DEFINES += QFLIPPER_BLE
++    SOURCES += blespike.cpp bletransport.cpp
++    HEADERS += blespike.h bletransport.h
++}
++
++macx: QMAKE_INFO_PLIST = $$PWD/Info.plist.app
++
+ include(../qflipper_common.pri)
+ 
+ TARGET = $$NAME
