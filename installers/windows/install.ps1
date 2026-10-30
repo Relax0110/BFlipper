@@ -35,13 +35,13 @@ function Install-WingetPackage([string]$Id, [string]$Override = '') {
   if ($LASTEXITCODE -ne 0) { throw "Could not install prerequisite $Id using winget." }
 }
 
-$Git = Get-Command git.exe -ErrorAction SilentlyContinue
-if (-not $Git) {
+$GitExe = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
+if (-not $GitExe) {
   Install-WingetPackage 'Git.Git'
-  $Git = Get-Command git.exe -ErrorAction SilentlyContinue
-  if (-not $Git -and (Test-Path "$env:ProgramFiles\Git\cmd\git.exe")) { $Git = Get-Item "$env:ProgramFiles\Git\cmd\git.exe" }
+  $GitExe = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
+  if (-not $GitExe -and (Test-Path "$env:ProgramFiles\Git\cmd\git.exe")) { $GitExe = "$env:ProgramFiles\Git\cmd\git.exe" }
 }
-if (-not $Git) { throw 'Git installation did not complete. Restart Windows and run this installer again.' }
+if (-not $GitExe) { throw 'Git installation did not complete. Restart Windows and run this installer again.' }
 
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $VsPath = if (Test-Path $VsWhere) { & $VsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath } else { '' }
@@ -51,20 +51,20 @@ if (-not $VsPath) {
 }
 if (-not $VsPath) { throw 'Visual Studio C++ Build Tools were not found after installation.' }
 
-$Python = Get-Command py.exe -ErrorAction SilentlyContinue
-if (-not $Python) {
+$PythonExe = (Get-Command py.exe -ErrorAction SilentlyContinue).Source
+if (-not $PythonExe) {
   Install-WingetPackage 'Python.Python.3.12'
-  $Python = Get-Command py.exe -ErrorAction SilentlyContinue
-  if (-not $Python -and (Test-Path "$env:LOCALAPPDATA\Programs\Python\Launcher\py.exe")) { $Python = Get-Item "$env:LOCALAPPDATA\Programs\Python\Launcher\py.exe" }
+  $PythonExe = (Get-Command py.exe -ErrorAction SilentlyContinue).Source
+  if (-not $PythonExe -and (Test-Path "$env:LOCALAPPDATA\Programs\Python\Launcher\py.exe")) { $PythonExe = "$env:LOCALAPPDATA\Programs\Python\Launcher\py.exe" }
 }
-if (-not $Python) { throw 'Python 3.12 launcher was not found after installation.' }
+if (-not $PythonExe) { throw 'Python 3.12 launcher was not found after installation.' }
 
 $QtKit = Join-Path $QtRoot '6.8.3\msvc2022_64'
 $QMake = Join-Path $QtKit 'bin\qmake.exe'
 if (-not (Test-Path $QMake)) {
-  & $Python.Source -3.12 -m pip install --user aqtinstall
+  & $PythonExe -3.12 -m pip install --user aqtinstall
   if ($LASTEXITCODE -ne 0) { throw 'Could not install the Qt download helper.' }
-  & $Python.Source -3.12 -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --modules qtconnectivity qt5compat qtserialport --outputdir $QtRoot
+  & $PythonExe -3.12 -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --modules qtconnectivity qt5compat qtserialport --outputdir $QtRoot
   if ($LASTEXITCODE -ne 0) { throw 'Could not download the Qt modules required by BFlipper.' }
 }
 
@@ -81,14 +81,14 @@ $env:PATH = "$(Join-Path $QtKit 'bin');$env:PATH"
 
 Remove-Item $Source -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $Root | Out-Null
-& $Git.Source clone --recurse-submodules https://github.com/flipperdevices/qFlipper.git $Source
+& $GitExe clone --recurse-submodules https://github.com/flipperdevices/qFlipper.git $Source
 if ($LASTEXITCODE -ne 0) { throw 'Could not download qFlipper source.' }
-& $Git.Source -C $Source checkout $UpstreamRef
+& $GitExe -C $Source checkout $UpstreamRef
 if ($LASTEXITCODE -ne 0) { throw 'Could not select the supported qFlipper source revision.' }
-& $Git.Source -C $Source submodule update --init --recursive
+& $GitExe -C $Source submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { throw 'Could not download qFlipper source dependencies.' }
 Get-ChildItem (Join-Path $PatchDir '*.patch') | Sort-Object Name | ForEach-Object {
-  & $Git.Source -C $Source apply --whitespace=nowarn $_.FullName
+  & $GitExe -C $Source apply --whitespace=nowarn $_.FullName
   if ($LASTEXITCODE -ne 0) { throw "Could not apply BLE patch $($_.Name)." }
 }
 
