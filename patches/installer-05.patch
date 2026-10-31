@@ -283,7 +283,7 @@ index 8bc2434..4c5a82d 100644
      Application app(argc, argv);
      return app.exec();
 diff --git a/application/main.qml b/application/main.qml
-index ceb0ba6..4f43b73 100644
+index ceb0ba6..39a5bc5 100644
 --- a/application/main.qml
 +++ b/application/main.qml
 @@ -8,22 +8,26 @@ import "components"
@@ -299,7 +299,7 @@ index ceb0ba6..4f43b73 100644
  
 -    minimumWidth: mainWindow.baseWidth + mainWindow.shadowSize * 2
 -    minimumHeight: mainWindow.baseHeight + mainWindow.shadowSize * 2
-+    minimumWidth: Qt.platform.os === "linux" ? 640 : mainWindow.baseWidth + mainWindow.shadowSize * 2
++    minimumWidth: Qt.platform.os === "linux" ? 480 : mainWindow.baseWidth + mainWindow.shadowSize * 2
 +    minimumHeight: Qt.platform.os === "linux" ? 400 : mainWindow.baseHeight + mainWindow.shadowSize * 2
  
 -    maximumWidth: minimumWidth
