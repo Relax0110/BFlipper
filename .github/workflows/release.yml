@@ -20,7 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Package Debian installer
-        run: bash installers/debian/package-installer.sh "0.1.0+${GITHUB_SHA::7}" dist
+        run: |
+          bash installers/debian/package-installer.sh "0.2.0+${GITHUB_SHA::7}" dist all
+          bash installers/debian/package-installer.sh "0.2.0+${GITHUB_SHA::7}" dist arm64
       - uses: actions/upload-artifact@v4
         with:
           name: BFlipper-Debian12-Installer

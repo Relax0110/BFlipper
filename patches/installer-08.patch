@@ -1,3 +1,44 @@
+diff --git a/backend/flipperzero/serialtransport.h b/backend/flipperzero/serialtransport.h
+new file mode 100644
+index 0000000..947d61f
+--- /dev/null
++++ b/backend/flipperzero/serialtransport.h
+@@ -0,0 +1,35 @@
++#pragma once
++
++#include "flippertransport.h"
++
++QT_BEGIN_NAMESPACE
++class QSerialPort;
++QT_END_NAMESPACE
++
++namespace Flipper {
++namespace Zero {
++
++// FlipperTransport over USB CDC. Wraps an already-opened QSerialPort (as produced
++// by SerialInitHelper) and takes ownership of it; behaviour is byte-for-byte
++// what ProtobufSession did before, just behind the transport interface.
++class SerialTransport : public FlipperTransport
++{
++    Q_OBJECT
++
++public:
++    explicit SerialTransport(QSerialPort *port, QObject *parent = nullptr);
++
++    bool open() override;
++    void close() override;
++    qint64 write(const QByteArray &data) override;
++    QByteArray readAll() override;
++    void clear() override;
++    bool flush(bool preferUnacknowledged = false) override;
++    QString errorString() const override;
++
++private:
++    QSerialPort *m_port;
++};
++
++}
++}
 diff --git a/build_mac.sh b/build_mac.sh
 index 781d65c..e50c967 100755
 --- a/build_mac.sh

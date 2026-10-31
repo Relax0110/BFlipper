@@ -1,9 +1,9 @@
 diff --git a/application/bletransport.h b/application/bletransport.h
 new file mode 100644
-index 0000000..d34263d
+index 0000000..33e096f
 --- /dev/null
 +++ b/application/bletransport.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,84 @@
 +#pragma once
 +
 +#include "flipperzero/flippertransport.h"
@@ -42,7 +42,8 @@ index 0000000..d34263d
 +    qint64 write(const QByteArray &data) override;
 +    QByteArray readAll() override;
 +    void clear() override;
-+    bool flush() override;
++    bool flush(bool preferUnacknowledged = false) override;
++    bool supportsUnacknowledgedWrites() const override { return m_lastFlushUnacknowledged; }
 +    QString errorString() const override;
 +
 +private:
@@ -56,6 +57,8 @@ index 0000000..d34263d
 +    void onDescriptorWritten(const QLowEnergyDescriptor &d, const QByteArray &value);
 +    void onCharacteristicWritten(const QLowEnergyCharacteristic &c, const QByteArray &value);
 +    void onCharacteristicChanged(const QLowEnergyCharacteristic &c, const QByteArray &value);
++    void startConnection();
++    void retryConnection(const QString &reason);
 +
 +    // The Flipper's Serial GATT service + characteristics (from firmware).
 +    static const QBluetoothUuid kSerialService;
@@ -72,15 +75,41 @@ index 0000000..d34263d
 +    QByteArray m_incoming;                   // received, awaiting readAll()
 +    QByteArray m_outgoing;                   // queued for transmission
 +    bool m_rxWithResponse = true;            // pace writes on characteristicWritten
++    bool m_rxWithoutResponse = false;        // low-latency single-packet writes
++    bool m_fastWritePending = false;         // next flushed packet fits in one ATT write
++    bool m_lastFlushUnacknowledged = false;  // whether the most recent flush used that path
 +    bool m_writing = false;                  // a chunk write is in flight
 +    int  m_mtu = 20;                         // ATT write payload (updated on connect)
 +
 +    int  m_handshakeStep = 0;                // 0 idle, 1 TX-cccd, 2 flow-cccd, 3 rpc, 4 open
++    int  m_connectAttempts = 0;
 +    bool m_opened = false;
 +    bool m_failed = false;
 +    bool m_closing = false;
 +    QString m_error;
 +};
+diff --git a/application/components/KeypadButton.qml b/application/components/KeypadButton.qml
+index 0cdc5a2..0228ba3 100644
+--- a/application/components/KeypadButton.qml
++++ b/application/components/KeypadButton.qml
+@@ -76,14 +76,15 @@ Item {
+     Timer {
+         id: longTimer
+         repeat: false
+-        interval: 350
++        // Start held-key behavior quickly so navigation over BLE feels responsive.
++        interval: 150
+         onTriggered: control.longPress()
+     }
+ 
+     Timer {
+         id: repeatTimer
+         repeat: true
+-        interval: 150
++        interval: 60
+         onTriggered: control.repeat()
+     }
+ }
 diff --git a/application/components/NoDeviceOverlay.qml b/application/components/NoDeviceOverlay.qml
 index d4da985..6f734f6 100644
 --- a/application/components/NoDeviceOverlay.qml
@@ -198,6 +227,57 @@ index d4da985..6f734f6 100644
      Image {
          id: spinner
  
+diff --git a/application/main.cpp b/application/main.cpp
+index 8bc2434..4c5a82d 100644
+--- a/application/main.cpp
++++ b/application/main.cpp
+@@ -1,6 +1,8 @@
+ #include "application.h"
+ 
+ #include <QSettings>
++#include <QQuickWindow>
++#include <QSGRendererInterface>
+ 
+ int main(int argc, char *argv[])
+ {
+@@ -16,6 +18,10 @@ int main(int argc, char *argv[])
+ #endif
+ 
+     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::RoundPreferFloor);
++#if defined(Q_OS_LINUX) && defined(Q_PROCESSOR_ARM_64)
++    // Avoid llvmpipe saturating ARM systems where X11 exposes no accelerated GLX.
++    QQuickWindow::setSceneGraphBackend(QStringLiteral("software"));
++#endif
+ 
+     Application app(argc, argv);
+     return app.exec();
+diff --git a/application/screencanvas.cpp b/application/screencanvas.cpp
+index e1c0ca9..ea23657 100644
+--- a/application/screencanvas.cpp
++++ b/application/screencanvas.cpp
+@@ -33,13 +33,15 @@ void ScreenCanvas::setFrame(const ScreenFrame &frame)
+     setCanvasSize(frame.size);
+     setCanvasOrientation(frame.orientation);
+ 
+-    for (auto x = 0; x < m_canvas.width(); x++) {
+-        for (auto y = 0; y < m_canvas.height(); y++) {
+-            const auto i = y / 8 * m_canvas.width() + x;
+-            const auto z = y % 8;
+-            const auto color = ((frame.pixelData.at(i) & (1 << z))) ? m_foreground : m_background;
+-
+-            m_canvas.setPixelColor(x, y, color);
++    const QRgb foreground = m_foreground.rgba();
++    const QRgb background = m_background.rgba();
++    for (int y = 0; y < m_canvas.height(); ++y) {
++        auto *row = reinterpret_cast<QRgb *>(m_canvas.scanLine(y));
++        const int byteRow = (y / 8) * m_canvas.width();
++        const int bit = y % 8;
++        for (int x = 0; x < m_canvas.width(); ++x) {
++            row[x] = (static_cast<quint8>(frame.pixelData.at(byteRow + x)) & (1u << bit))
++                    ? foreground : background;
+         }
+     }
+ 
 diff --git a/backend/backend.pro b/backend/backend.pro
 index 21f50bb..118184f 100644
 --- a/backend/backend.pro
@@ -219,105 +299,3 @@ index 21f50bb..118184f 100644
      flipperzero/rpc/abstractprotobufoperation.h \
      flipperzero/rpc/abstractstorageoperation.h \
      flipperzero/rpc/guiscreenframeoperation.h \
-diff --git a/backend/deviceregistry.cpp b/backend/deviceregistry.cpp
-index bc2d594..e350d38 100644
---- a/backend/deviceregistry.cpp
-+++ b/backend/deviceregistry.cpp
-@@ -3,10 +3,13 @@
- #include <QDebug>
- #include <QMetaObject>
- #include <QLoggingCategory>
-+#include <algorithm>
-+#include <memory>
- 
- #include "flipperzero/helper/deviceinfohelper.h"
- #include "flipperzero/flipperzero.h"
- #include "flipperzero/devicestate.h"
-+#include "flipperzero/protobufsession.h"
- 
- #include "usbdevice.h"
- 
-@@ -50,6 +53,13 @@ int DeviceRegistry::deviceCount() const
-     return m_devices.size();
- }
- 
-+bool DeviceRegistry::hasBleDevice() const
-+{
-+    return std::any_of(m_devices.begin(), m_devices.end(), [](FlipperZero *device) {
-+        return device->deviceState()->deviceInfo().isBle;
-+    });
-+}
-+
- BackendError::ErrorType DeviceRegistry::error() const
- {
-     return m_error;
-@@ -133,6 +143,40 @@ void DeviceRegistry::removeOfflineDevices()
-     }
- }
- 
-+void DeviceRegistry::connectBleDevice(const QString &name, const Zero::TransportFactory &factory)
-+{
-+    if(!factory || m_isQueryInProgress) {
-+        return;
-+    }
-+
-+    if(hasBleDevice()) {
-+        removeBleDevice();
-+    }
-+
-+    setQueryInProgress(true);
-+    auto *fetcher = new Zero::VCPDeviceInfoHelper(USBDeviceInfo(), this);
-+    fetcher->setBleTransport(name, factory);
-+    connect(fetcher, &Zero::AbstractDeviceInfoHelper::finished, this, &DeviceRegistry::processDevice);
-+    connect(fetcher, &Zero::AbstractDeviceInfoHelper::finished, fetcher, &QObject::deleteLater);
-+}
-+
-+void DeviceRegistry::removeBleDevice()
-+{
-+    const auto it = std::find_if(m_devices.begin(), m_devices.end(), [](FlipperZero *device) {
-+        return device->deviceState()->deviceInfo().isBle;
-+    });
-+    if(it == m_devices.end()) {
-+        return;
-+    }
-+
-+    auto *device = *it;
-+    device->deviceState()->setOnline(false);
-+    m_devices.erase(it);
-+    device->deleteLater();
-+    emit deviceCountChanged();
-+    emit currentDeviceChanged();
-+}
-+
- void DeviceRegistry::processDevice()
- {
-     setQueryInProgress(false);
-@@ -147,7 +191,8 @@ void DeviceRegistry::processDevice()
-     }
- 
-     const auto it = std::find_if(m_devices.begin(), m_devices.end(), [&info](Flipper::FlipperZero *arg) {
--        return info.name == arg->deviceState()->name();
-+        const auto &oldInfo = arg->deviceState()->deviceInfo();
-+        return info.isBle == oldInfo.isBle && info.name == oldInfo.name;
-     });
- 
-     if(it != m_devices.end()) {
-@@ -161,6 +206,18 @@ void DeviceRegistry::processDevice()
-         auto *device = new FlipperZero(info, this);
-         m_devices.append(device);
- 
-+        if(info.isBle) {
-+            auto *rpc = device->rpc();
-+            auto wasUp = std::make_shared<bool>(false);
-+            connect(rpc, &Zero::ProtobufSession::sessionStateChanged, this, [this, rpc, wasUp]() {
-+                if(rpc->isSessionUp()) {
-+                    *wasUp = true;
-+                } else if(*wasUp) {
-+                    removeBleDevice();
-+                }
-+            });
-+        }
-+
-         emit deviceCountChanged();
- 
-         if(m_devices.size() == 1) {

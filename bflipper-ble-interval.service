@@ -1,0 +1,12 @@
+[Unit]
+Description=Low-latency BLE interval for Flipper Zero
+After=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/bflipper-ble-interval
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

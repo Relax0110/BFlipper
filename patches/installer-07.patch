@@ -1,5 +1,5 @@
 diff --git a/backend/flipperzero/protobufsession.cpp b/backend/flipperzero/protobufsession.cpp
-index 482ea92..14fe688 100644
+index 482ea92..02a6b5c 100644
 --- a/backend/flipperzero/protobufsession.cpp
 +++ b/backend/flipperzero/protobufsession.cpp
 @@ -11,6 +11,7 @@
@@ -130,7 +130,17 @@ index 482ea92..14fe688 100644
      auto *response = m_plugin->decode(m_receivedData, this);
  
      if(!response) {
-@@ -327,9 +373,9 @@ void ProtobufSession::onSerialPortErrorOccured()
+@@ -306,6 +352,9 @@ void ProtobufSession::onSerialPortReadyRead()
+         processMatchedResponse(response);
+     } else if(mainResponse->id() == 0) {
+         processBroadcastResponse(response);
++    } else if(m_ignoredResponseIds.remove(mainResponse->id())) {
++        // Latency-sensitive BLE input RPCs advance as soon as their one-packet
++        // write is queued. Their replies are expected but no longer gate input.
+     } else {
+         processUnmatchedResponse(response);
+     }
+@@ -327,9 +376,9 @@ void ProtobufSession::onSerialPortErrorOccured()
  {
      qCInfo(LOG_SESSION) << "Serial connection was lost.";
  
@@ -143,7 +153,7 @@ index 482ea92..14fe688 100644
  
      stopSession();
  }
-@@ -368,7 +414,7 @@ void ProtobufSession::writeToPort()
+@@ -368,7 +417,7 @@ void ProtobufSession::writeToPort()
  
      do {
          const auto &buf = m_currentOperation->encodeRequest(m_plugin);
@@ -152,12 +162,12 @@ index 482ea92..14fe688 100644
  
          success = bytesWritten >= 0;
  
-@@ -382,10 +428,10 @@ void ProtobufSession::writeToPort()
+@@ -382,26 +431,37 @@ void ProtobufSession::writeToPort()
  
      } while(m_currentOperation->hasMoreData());
  
 -    success &= m_serialPort->flush();
-+    success &= m_transport->flush();
++    success &= m_transport->flush(m_currentOperation->completesOnWrite());
  
      if(!success) {
 -        setError(BackendError::SerialError, m_serialPort->errorString());
@@ -165,7 +175,23 @@ index 482ea92..14fe688 100644
          stopSession();
          return;
      }
-@@ -399,9 +445,10 @@ void ProtobufSession::doStopSession()
++
++    if(m_currentOperation && m_currentOperation->completesOnWrite() &&
++       m_transport->supportsUnacknowledgedWrites()) {
++        // BLE key events are tiny, single-packet RPCs. Don't serialize each tap
++        // behind the device's RPC response; the transport has already submitted
++        // the packet without an ATT acknowledgement.
++        m_ignoredResponseIds.insert(m_currentOperation->id());
++        m_currentOperation->finish();
++    }
+ }
+ 
+ void ProtobufSession::doStopSession()
+ {
+     qCInfo(LOG_SESSION) << "Stopping RPC session...";
++    m_ignoredResponseIds.clear();
+ 
+     if(m_currentOperation) {
          m_currentOperation->abort(QStringLiteral("RPC session was stopped with operations still running"));
      }
  
@@ -179,7 +205,7 @@ index 482ea92..14fe688 100644
      }
  
      unloadProtobufPlugin();
-@@ -545,6 +592,20 @@ void ProtobufSession::unloadProtobufPlugin()
+@@ -545,6 +605,20 @@ void ProtobufSession::unloadProtobufPlugin()
  #endif
  }
  
@@ -201,10 +227,18 @@ index 482ea92..14fe688 100644
  {
      setError(error, errorString);
 diff --git a/backend/flipperzero/protobufsession.h b/backend/flipperzero/protobufsession.h
-index 62831e6..f6b006e 100644
+index 62831e6..e1dd709 100644
 --- a/backend/flipperzero/protobufsession.h
 +++ b/backend/flipperzero/protobufsession.h
-@@ -14,6 +14,7 @@ namespace Flipper {
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <QQueue>
++#include <QSet>
+ #include <QObject>
+ #include <QSerialPortInfo>
+ 
+@@ -14,6 +15,7 @@ namespace Flipper {
  namespace Zero {
  
  class AbstractProtobufOperation;
@@ -212,7 +246,7 @@ index 62831e6..f6b006e 100644
  
  class SystemRebootOperation;
  class SystemDeviceInfoOperation;
-@@ -63,6 +64,11 @@ public:
+@@ -63,6 +65,11 @@ public:
  
      void setSerialPort(const QSerialPortInfo &portInfo);
  
@@ -224,7 +258,7 @@ index 62831e6..f6b006e 100644
      void setMajorVersion(int versionMajor);
      void setMinorVersion(int versionMinor);
  
-@@ -105,6 +111,7 @@ public slots:
+@@ -105,6 +112,7 @@ public slots:
      void stopSession();
  
  private slots:
@@ -232,7 +266,7 @@ index 62831e6..f6b006e 100644
      void onSerialPortReadyRead();
      void onSerialPortBytesWriten(qint64 nbytes);
      void onSerialPortErrorOccured();
-@@ -126,6 +133,7 @@ private:
+@@ -126,6 +134,7 @@ private:
      bool loadProtobufPlugin();
      void unloadProtobufPlugin();
  
@@ -240,7 +274,7 @@ index 62831e6..f6b006e 100644
      void stopEarly(BackendError::ErrorType error, const QString &errorString);
  
      const QString prettyOperationDescription() const;
-@@ -143,7 +151,7 @@ private:
+@@ -143,7 +152,7 @@ private:
  
      SessionState m_sessionState;
      QSerialPortInfo m_portInfo;
@@ -249,12 +283,44 @@ index 62831e6..f6b006e 100644
      QByteArray m_receivedData;
  
  #if !defined(QT_STATIC)
+@@ -151,6 +160,7 @@ private:
+ #endif
+     ProtobufPluginInterface *m_plugin;
+     QQueue<AbstractProtobufOperation*> m_queue;
++    QSet<uint32_t> m_ignoredResponseIds;
+     AbstractProtobufOperation *m_currentOperation;
+ 
+     qint64 m_bytesToWrite;
+diff --git a/backend/flipperzero/rpc/abstractprotobufoperation.h b/backend/flipperzero/rpc/abstractprotobufoperation.h
+index 041e587..40eed32 100644
+--- a/backend/flipperzero/rpc/abstractprotobufoperation.h
++++ b/backend/flipperzero/rpc/abstractprotobufoperation.h
+@@ -21,6 +21,7 @@ public:
+ 
+     uint32_t id() const;
+     virtual bool hasMoreData() const;
++    virtual bool completesOnWrite() const { return false; }
+     bool isFinished() const;
+ 
+     void start() override;
+diff --git a/backend/flipperzero/rpc/guisendinputoperation.h b/backend/flipperzero/rpc/guisendinputoperation.h
+index 4a32ff5..934b9da 100644
+--- a/backend/flipperzero/rpc/guisendinputoperation.h
++++ b/backend/flipperzero/rpc/guisendinputoperation.h
+@@ -12,6 +12,7 @@ class GuiSendInputOperation : public AbstractProtobufOperation
+ public:
+     GuiSendInputOperation(uint32_t id, int key, int type, QObject *parent = nullptr);
+     const QString description() const override;
++    bool completesOnWrite() const override { return true; }
+     const QByteArray encodeRequest(ProtobufPluginInterface *encoder) override;
+ 
+ private:
 diff --git a/backend/flipperzero/serialtransport.cpp b/backend/flipperzero/serialtransport.cpp
 new file mode 100644
-index 0000000..3bf041c
+index 0000000..72acf5b
 --- /dev/null
 +++ b/backend/flipperzero/serialtransport.cpp
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,63 @@
 +#include "serialtransport.h"
 +
 +#include <QSerialPort>
@@ -305,8 +371,9 @@ index 0000000..3bf041c
 +    }
 +}
 +
-+bool SerialTransport::flush()
++bool SerialTransport::flush(bool preferUnacknowledged)
 +{
++    Q_UNUSED(preferUnacknowledged)
 +    return m_port && m_port->flush();
 +}
 +
@@ -314,47 +381,6 @@ index 0000000..3bf041c
 +{
 +    return m_port ? m_port->errorString() : QString();
 +}
-+
-+}
-+}
-diff --git a/backend/flipperzero/serialtransport.h b/backend/flipperzero/serialtransport.h
-new file mode 100644
-index 0000000..7e5bf3e
---- /dev/null
-+++ b/backend/flipperzero/serialtransport.h
-@@ -0,0 +1,35 @@
-+#pragma once
-+
-+#include "flippertransport.h"
-+
-+QT_BEGIN_NAMESPACE
-+class QSerialPort;
-+QT_END_NAMESPACE
-+
-+namespace Flipper {
-+namespace Zero {
-+
-+// FlipperTransport over USB CDC. Wraps an already-opened QSerialPort (as produced
-+// by SerialInitHelper) and takes ownership of it; behaviour is byte-for-byte
-+// what ProtobufSession did before, just behind the transport interface.
-+class SerialTransport : public FlipperTransport
-+{
-+    Q_OBJECT
-+
-+public:
-+    explicit SerialTransport(QSerialPort *port, QObject *parent = nullptr);
-+
-+    bool open() override;
-+    void close() override;
-+    qint64 write(const QByteArray &data) override;
-+    QByteArray readAll() override;
-+    void clear() override;
-+    bool flush() override;
-+    QString errorString() const override;
-+
-+private:
-+    QSerialPort *m_port;
-+};
 +
 +}
 +}

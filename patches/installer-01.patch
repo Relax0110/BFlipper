@@ -22,34 +22,6 @@ index 44c31a2..87665b5 100644
 +    $$PWD/nanopb/pb_common.h \
 +    $$PWD/nanopb/pb_decode.h \
 +    $$PWD/nanopb/pb_encode.h
-diff --git a/README.md b/README.md
-index 32a13a8..b05595a 100644
---- a/README.md
-+++ b/README.md
-@@ -18,6 +18,7 @@ Download official qFlipper builds here: [update.flipperzero.one](https://update.
- * Stream Flipper's display and control it remotely
- * Install firmware from a `.dfu` file
- * Backup and restore settings, progress and pairing data
-+* Connect to a Flipper Zero over Bluetooth Low Energy for RPC, file access, and screen control
- * Automatic self-update feature
- * Command line interface
- 
-@@ -78,9 +79,15 @@ Build requirements:
- 
- - Xcode or command line tools
- - Qt6 6.3.1 static universal from [Flipper brew tap](https://github.com/flipperdevices/homebrew-flipper)
-+- Qt Bluetooth from Qt Connectivity (CoreBluetooth support enabled)
- - libusb 1.0.24 universal from [Flipper brew tap](https://github.com/flipperdevices/homebrew-flipper)
- - [dmgbuild](https://pypi.org/project/dmgbuild/) >= 1.5.2
- 
-+Over Bluetooth, turn Bluetooth on in the Flipper's Settings menu, then select
-+**Connect over Bluetooth** on qFlipper's device screen. BLE supports normal RPC
-+features such as file management and screen control; recovery and DFU firmware
-+flashing still require USB.
-+
- If you want to sign binaries, set `SIGNING_KEY` environment variable:
- 
- 	export SIGNING_KEY="Your Developer Key ID"
 diff --git a/application/Info.plist.app b/application/Info.plist.app
 new file mode 100644
 index 0000000..660200f

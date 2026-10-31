@@ -1,12 +1,13 @@
 diff --git a/application/bletransport.cpp b/application/bletransport.cpp
 new file mode 100644
-index 0000000..872af47
+index 0000000..83051aa
 --- /dev/null
 +++ b/application/bletransport.cpp
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,382 @@
 +#include "bletransport.h"
 +
 +#include <QTimer>
++#include <QLowEnergyConnectionParameters>
 +
 +// Flipper Serial GATT service + characteristics (from flipperzero-firmware
 +// targets/f7/ble_glue/services/serial_service_uuid.inc). Identical to the spike.
@@ -43,19 +44,42 @@ index 0000000..872af47
 +    m_opened = false;
 +    m_closing = false;
 +    m_handshakeStep = 0;
++    m_connectAttempts = 0;
 +
++    startConnection();
++    return true; // asynchronous: opened() or openFailed() follows
++}
++
++void BleTransport::startConnection()
++{
++    ++m_connectAttempts;
 +    m_ctrl = QLowEnergyController::createCentral(m_device, this);
 +
 +    connect(m_ctrl, &QLowEnergyController::connected, this, [this]() {
++        // Request a short BLE interval for responsive input and screen updates.
++        // The peripheral may negotiate a different value or reject the request.
++        QLowEnergyConnectionParameters parameters;
++        parameters.setIntervalRange(7.5, 15.0);
++        parameters.setLatency(0);
++        m_ctrl->requestConnectionUpdate(parameters);
 +        m_ctrl->discoverServices();
 +    });
 +    connect(m_ctrl, &QLowEnergyController::disconnected, this, [this]() {
++        if (!m_opened && !m_closing && m_ctrl && m_connectAttempts < 3) {
++            retryConnection(QStringLiteral("Bluetooth disconnected during setup; retrying."));
++            return;
++        }
 +        fail(QStringLiteral("Bluetooth link disconnected."));
 +    });
 +    connect(m_ctrl, &QLowEnergyController::errorOccurred, this, [this](QLowEnergyController::Error) {
-+        fail(QStringLiteral("Bluetooth controller error: %1  "
-+                            "(on Windows, pair the Flipper in Bluetooth settings first)")
-+             .arg(m_ctrl->errorString()));
++        const QString reason = QStringLiteral("Bluetooth controller error: %1  "
++                                              "(on Windows, pair the Flipper in Bluetooth settings first)")
++                                   .arg(m_ctrl->errorString());
++        if(!m_opened && !m_closing && m_connectAttempts < 3) {
++            retryConnection(reason);
++        } else {
++            fail(reason);
++        }
 +    });
 +    connect(m_ctrl, &QLowEnergyController::discoveryFinished, this, &BleTransport::onDiscoveryFinished);
 +    connect(m_ctrl, &QLowEnergyController::mtuChanged, this, [this](int mtu) {
@@ -63,7 +87,41 @@ index 0000000..872af47
 +    });
 +
 +    m_ctrl->connectToDevice();
-+    return true; // asynchronous: opened() or openFailed() follows
++}
++
++void BleTransport::retryConnection(const QString &reason)
++{
++    m_error = reason;
++    QLowEnergyController *failed = m_ctrl;
++    m_ctrl = nullptr;
++
++    if(m_serial) {
++        m_serial->deleteLater();
++        m_serial = nullptr;
++    }
++
++    if(failed) {
++        failed->disconnect(this);
++        if(failed->state() == QLowEnergyController::UnconnectedState) {
++            failed->deleteLater();
++        } else {
++            // Keep an in-flight controller alive until BlueZ confirms teardown.
++            failed->setParent(nullptr);
++            connect(failed, &QLowEnergyController::disconnected,
++                    failed, &QObject::deleteLater);
++            QTimer::singleShot(5000, failed, &QObject::deleteLater);
++            failed->disconnectFromDevice();
++        }
++    }
++
++    m_handshakeStep = 0;
++    m_writing = false;
++    const int delay = 1000 * (1 << (m_connectAttempts - 1));
++    QTimer::singleShot(delay, this, [this]() {
++        if(!m_closing && !m_opened && !m_ctrl) {
++            startConnection();
++        }
++    });
 +}
 +
 +void BleTransport::onDiscoveryFinished()
@@ -97,9 +155,11 @@ index 0000000..872af47
 +        return;
 +    }
 +
-+    // Prefer paced Write-with-response for outgoing frames; fall back to
-+    // write-without-response only if that is all the RX endpoint offers.
++    // Keep write-with-response for multi-packet transfers, but use the
++    // no-response mode for a single ATT packet. Small RPCs (especially screen
++    // key events) then avoid an unnecessary BLE acknowledgement round-trip.
 +    m_rxWithResponse = (m_rx.properties() & QLowEnergyCharacteristic::Write);
++    m_rxWithoutResponse = (m_rx.properties() & QLowEnergyCharacteristic::WriteNoResponse);
 +
 +    // Step 1: subscribe to TX. It is INDICATE-type on the Flipper (0x0200);
 +    // notifications (0x0100) delivered nothing.
@@ -153,9 +213,12 @@ index 0000000..872af47
 +
 +    // Write 0x01 to start the RPC session (BLE equivalent of USB start_rpc_session).
 +    if(rpc.properties() & QLowEnergyCharacteristic::WriteNoResponse) {
-+        // No characteristicWritten will arrive; the write is effectively immediate.
++        // No characteristicWritten will arrive. Give the Flipper's serial RPC
++        // service a moment to start before sending its first protobuf request.
 +        m_serial->writeCharacteristic(rpc, QByteArray::fromHex("01"), QLowEnergyService::WriteWithoutResponse);
-+        finishOpen();
++        QTimer::singleShot(100, this, [this]() {
++            if(!m_closing && !m_failed) { finishOpen(); }
++        });
 +    } else {
 +        // Wait for the write to be acknowledged before declaring the link ready.
 +        m_serial->writeCharacteristic(rpc, QByteArray::fromHex("01"), QLowEnergyService::WriteWithResponse);
@@ -216,11 +279,21 @@ index 0000000..872af47
 +    if(!m_serial || !m_rx.isValid() || m_outgoing.isEmpty()) {
 +        return;
 +    }
++    if(m_rxWithResponse && m_writing) {
++        return; // preserve write ordering while an acknowledged chunk is in flight
++    }
++
++    if(m_fastWritePending && m_rxWithoutResponse && m_outgoing.size() <= m_mtu) {
++        const QByteArray chunk = m_outgoing;
++        m_outgoing.clear();
++        m_fastWritePending = false;
++        m_serial->writeCharacteristic(m_rx, chunk, QLowEnergyService::WriteWithoutResponse);
++        emit bytesWritten(chunk.size());
++        return;
++    }
++    m_fastWritePending = false;
 +
 +    if(m_rxWithResponse) {
-+        if(m_writing) {
-+            return; // one chunk outstanding; onCharacteristicWritten will resume
-+        }
 +        const QByteArray chunk = m_outgoing.left(m_mtu);
 +        m_outgoing.remove(0, chunk.size());
 +        m_writing = true;
@@ -247,14 +320,18 @@ index 0000000..872af47
 +{
 +    m_incoming.clear();
 +    m_outgoing.clear();
++    m_fastWritePending = false;
++    m_lastFlushUnacknowledged = false;
 +    m_writing = false;
 +}
 +
-+bool BleTransport::flush()
++bool BleTransport::flush(bool preferUnacknowledged)
 +{
 +    if(!m_opened) {
 +        return false;
 +    }
++    m_fastWritePending = preferUnacknowledged && m_rxWithoutResponse && m_outgoing.size() <= m_mtu;
++    m_lastFlushUnacknowledged = m_fastWritePending;
 +    pumpTx();
 +    return true;
 +}

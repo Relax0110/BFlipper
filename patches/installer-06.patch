@@ -1,5 +1,127 @@
+diff --git a/backend/deviceregistry.cpp b/backend/deviceregistry.cpp
+index bc2d594..a1b128e 100644
+--- a/backend/deviceregistry.cpp
++++ b/backend/deviceregistry.cpp
+@@ -3,10 +3,14 @@
+ #include <QDebug>
+ #include <QMetaObject>
+ #include <QLoggingCategory>
++#include <QTimer>
++#include <algorithm>
++#include <memory>
+ 
+ #include "flipperzero/helper/deviceinfohelper.h"
+ #include "flipperzero/flipperzero.h"
+ #include "flipperzero/devicestate.h"
++#include "flipperzero/protobufsession.h"
+ 
+ #include "usbdevice.h"
+ 
+@@ -50,6 +54,13 @@ int DeviceRegistry::deviceCount() const
+     return m_devices.size();
+ }
+ 
++bool DeviceRegistry::hasBleDevice() const
++{
++    return std::any_of(m_devices.begin(), m_devices.end(), [](FlipperZero *device) {
++        return device->deviceState()->deviceInfo().isBle;
++    });
++}
++
+ BackendError::ErrorType DeviceRegistry::error() const
+ {
+     return m_error;
+@@ -133,6 +144,40 @@ void DeviceRegistry::removeOfflineDevices()
+     }
+ }
+ 
++void DeviceRegistry::connectBleDevice(const QString &name, const Zero::TransportFactory &factory)
++{
++    if(!factory || m_isQueryInProgress) {
++        return;
++    }
++
++    if(hasBleDevice()) {
++        removeBleDevice();
++    }
++
++    setQueryInProgress(true);
++    auto *fetcher = new Zero::VCPDeviceInfoHelper(USBDeviceInfo(), this);
++    fetcher->setBleTransport(name, factory);
++    connect(fetcher, &Zero::AbstractDeviceInfoHelper::finished, this, &DeviceRegistry::processDevice);
++    connect(fetcher, &Zero::AbstractDeviceInfoHelper::finished, fetcher, &QObject::deleteLater);
++}
++
++void DeviceRegistry::removeBleDevice()
++{
++    const auto it = std::find_if(m_devices.begin(), m_devices.end(), [](FlipperZero *device) {
++        return device->deviceState()->deviceInfo().isBle;
++    });
++    if(it == m_devices.end()) {
++        return;
++    }
++
++    auto *device = *it;
++    device->deviceState()->setOnline(false);
++    m_devices.erase(it);
++    device->deleteLater();
++    emit deviceCountChanged();
++    emit currentDeviceChanged();
++}
++
+ void DeviceRegistry::processDevice()
+ {
+     setQueryInProgress(false);
+@@ -142,12 +187,27 @@ void DeviceRegistry::processDevice()
+ 
+     if(fetcher->isError()) {
+         qCDebug(LOG_DEVREG).noquote() << "Device initialization failed:" << fetcher->errorString();
++        if(info.isBle && m_bleIdentifyRetries < 2) {
++            ++m_bleIdentifyRetries;
++            const QString deviceName = info.name;
++            const Zero::TransportFactory factory = info.transportFactory;
++            qCDebug(LOG_DEVREG) << "Retrying BLE device identification" << m_bleIdentifyRetries;
++            QTimer::singleShot(500, this, [this, deviceName, factory]() {
++                connectBleDevice(deviceName, factory);
++            });
++            return;
++        }
++        m_bleIdentifyRetries = 0;
+         setError(fetcher->error());
+         return;
+     }
++    if(info.isBle) {
++        m_bleIdentifyRetries = 0;
++    }
+ 
+     const auto it = std::find_if(m_devices.begin(), m_devices.end(), [&info](Flipper::FlipperZero *arg) {
+-        return info.name == arg->deviceState()->name();
++        const auto &oldInfo = arg->deviceState()->deviceInfo();
++        return info.isBle == oldInfo.isBle && info.name == oldInfo.name;
+     });
+ 
+     if(it != m_devices.end()) {
+@@ -161,6 +221,18 @@ void DeviceRegistry::processDevice()
+         auto *device = new FlipperZero(info, this);
+         m_devices.append(device);
+ 
++        if(info.isBle) {
++            auto *rpc = device->rpc();
++            auto wasUp = std::make_shared<bool>(false);
++            connect(rpc, &Zero::ProtobufSession::sessionStateChanged, this, [this, rpc, wasUp]() {
++                if(rpc->isSessionUp()) {
++                    *wasUp = true;
++                } else if(*wasUp) {
++                    removeBleDevice();
++                }
++            });
++        }
++
+         emit deviceCountChanged();
+ 
+         if(m_devices.size() == 1) {
 diff --git a/backend/deviceregistry.h b/backend/deviceregistry.h
-index 27fb49c..7f52e68 100644
+index 27fb49c..21a8126 100644
 --- a/backend/deviceregistry.h
 +++ b/backend/deviceregistry.h
 @@ -5,6 +5,7 @@
@@ -27,8 +149,16 @@ index 27fb49c..7f52e68 100644
  
  private slots:
      void processDevice();
+@@ -53,6 +57,7 @@ private:
+     DeviceList m_devices;
+     BackendError::ErrorType m_error;
+     bool m_isQueryInProgress;
++    int m_bleIdentifyRetries = 0;
+ };
+ 
+ }
 diff --git a/backend/flipperzero/deviceinfo.h b/backend/flipperzero/deviceinfo.h
-index deaa18b..adb1cd0 100644
+index deaa18b..93c18ef 100644
 --- a/backend/flipperzero/deviceinfo.h
 +++ b/backend/flipperzero/deviceinfo.h
 @@ -1,7 +1,9 @@
@@ -51,7 +181,34 @@ index deaa18b..adb1cd0 100644
  struct HardwareInfo {
      Q_GADGET
      Q_PROPERTY(QString version MEMBER version)
-@@ -106,6 +111,8 @@ public:
+@@ -30,6 +35,10 @@ public:
+     Region region;
+ 
+     // Needed in order to work with QVariant
++    // Keep values unequal, matching operator!= below, so Qt's meta-property
++    // setter always copies the complete struct (some fields are not initialized
++    // until device information arrives).
++    bool operator ==(const HardwareInfo &other) const { Q_UNUSED(other) return false; }
+     bool operator !=(const HardwareInfo &other) const { Q_UNUSED(other) return true; }
+ };
+ 
+@@ -49,6 +58,7 @@ public:
+     QDate date;
+ 
+     // Needed in order to work with QVariant
++    bool operator ==(const SoftwareInfo &other) const { Q_UNUSED(other) return false; }
+     bool operator !=(const SoftwareInfo &other) const { Q_UNUSED(other) return true; }
+ };
+ 
+@@ -66,6 +76,7 @@ public:
+     bool isAssetsInstalled;
+ 
+     // Needed in order to work with QVariant
++    bool operator ==(const StorageInfo &other) const { Q_UNUSED(other) return false; }
+     bool operator !=(const StorageInfo &other) const { Q_UNUSED(other) return true; }
+ };
+ 
+@@ -106,6 +117,8 @@ public:
  
      USBDeviceInfo usbInfo;
      QSerialPortInfo portInfo;
@@ -62,10 +219,10 @@ index deaa18b..adb1cd0 100644
  }
 diff --git a/backend/flipperzero/flippertransport.h b/backend/flipperzero/flippertransport.h
 new file mode 100644
-index 0000000..02a2064
+index 0000000..9ca5de5
 --- /dev/null
 +++ b/backend/flipperzero/flippertransport.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,66 @@
 +#pragma once
 +
 +#include <QObject>
@@ -113,7 +270,12 @@ index 0000000..02a2064
 +    virtual void clear() = 0;
 +
 +    // Ensure queued writes have actually gone out; returns false on failure.
-+    virtual bool flush() = 0;
++    virtual bool flush(bool preferUnacknowledged = false) = 0;
++
++    // True when flush() can submit small writes without waiting for a peer
++    // acknowledgement. Callers may then complete latency-sensitive requests
++    // locally and ignore their later RPC reply.
++    virtual bool supportsUnacknowledgedWrites() const { return false; }
 +
 +    virtual QString errorString() const = 0;
 +
@@ -128,7 +290,7 @@ index 0000000..02a2064
 +}
 +}
 diff --git a/backend/flipperzero/flipperzero.cpp b/backend/flipperzero/flipperzero.cpp
-index 08a1c27..0c454b0 100644
+index 08a1c27..e2099bf 100644
 --- a/backend/flipperzero/flipperzero.cpp
 +++ b/backend/flipperzero/flipperzero.cpp
 @@ -230,13 +230,19 @@ void FlipperZero::onDeviceInfoChanged()
@@ -150,7 +312,7 @@ index 08a1c27..0c454b0 100644
 -    QTimer::singleShot(100, m_rpc, &ProtobufSession::startSession);
 +    // Give the device a moment before reopening the BLE RPC pipe after the
 +    // bootstrap query has closed its connection.
-+    QTimer::singleShot(transportFactory ? 3000 : 100, m_rpc, &ProtobufSession::startSession);
++    QTimer::singleShot(transportFactory ? 5000 : 100, m_rpc, &ProtobufSession::startSession);
  }
  
  void FlipperZero::onSessionStatusChanged()
