@@ -1,0 +1,130 @@
+--- a/README.md
++++ b/README.md
+@@ -18,6 +18,7 @@
+ * Stream Flipper's display and control it remotely
+ * Install firmware from a `.dfu` file
+ * Backup and restore settings, progress and pairing data
++* Connect to a Flipper Zero over Bluetooth Low Energy for RPC, file access, and screen control
+ * Automatic self-update feature
+ * Command line interface
+ 
+@@ -78,9 +79,15 @@
+ 
+ - Xcode or command line tools
+ - Qt6 6.3.1 static universal from [Flipper brew tap](https://github.com/flipperdevices/homebrew-flipper)
++- Qt Bluetooth from Qt Connectivity (CoreBluetooth support enabled)
+ - libusb 1.0.24 universal from [Flipper brew tap](https://github.com/flipperdevices/homebrew-flipper)
+ - [dmgbuild](https://pypi.org/project/dmgbuild/) >= 1.5.2
+ 
++Over Bluetooth, turn Bluetooth on in the Flipper's Settings menu, then select
++**Connect over Bluetooth** on qFlipper's device screen. BLE supports normal RPC
++features such as file management and screen control; recovery and DFU firmware
++flashing still require USB.
++
+ If you want to sign binaries, set `SIGNING_KEY` environment variable:
+ 
+ 	export SIGNING_KEY="Your Developer Key ID"
+--- a/application/main.qml
++++ b/application/main.qml
+@@ -8,7 +8,7 @@
+ Window {
+     id: root
+     visible: true
+-    flags: Qt.platform.os === "linux" ? Qt.Window : Qt.Window | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
++    flags: Qt.Window | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
+     title: Qt.application.displayName
+ 
+     width: mainWindow.baseWidth + mainWindow.shadowSize * 2
+@@ -20,7 +20,7 @@
+     maximumWidth: Qt.platform.os === "linux" ? 16777215 : minimumWidth
+     maximumHeight: Qt.platform.os === "linux" ? 16777215 : minimumHeight
+ 
+-    color: Qt.platform.os === "linux" ? "#000000" : "transparent"
++    color: "transparent"
+ 
+     MainWindow {
+         id: mainWindow
+@@ -59,6 +59,83 @@
+         }
+     }
+ 
++    // Keep the custom frameless appearance while still allowing the window
++    // manager/compositor to handle resize gestures and edge snapping.
++    readonly property int resizeHandle: 8
++
++    MouseArea {
++        x: root.resizeHandle
++        y: 0
++        width: root.width - root.resizeHandle * 2
++        height: root.resizeHandle
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeVerCursor
++        onPressed: root.startSystemResize(Qt.TopEdge)
++    }
++    MouseArea {
++        x: root.resizeHandle
++        y: root.height - root.resizeHandle
++        width: root.width - root.resizeHandle * 2
++        height: root.resizeHandle
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeVerCursor
++        onPressed: root.startSystemResize(Qt.BottomEdge)
++    }
++    MouseArea {
++        x: 0
++        y: root.resizeHandle
++        width: root.resizeHandle
++        height: root.height - root.resizeHandle * 2
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeHorCursor
++        onPressed: root.startSystemResize(Qt.LeftEdge)
++    }
++    MouseArea {
++        x: root.width - root.resizeHandle
++        y: root.resizeHandle
++        width: root.resizeHandle
++        height: root.height - root.resizeHandle * 2
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeHorCursor
++        onPressed: root.startSystemResize(Qt.RightEdge)
++    }
++    MouseArea {
++        x: 0
++        y: 0
++        width: root.resizeHandle
++        height: root.resizeHandle
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeFDiagCursor
++        onPressed: root.startSystemResize(Qt.TopEdge | Qt.LeftEdge)
++    }
++    MouseArea {
++        x: root.width - root.resizeHandle
++        y: 0
++        width: root.resizeHandle
++        height: root.resizeHandle
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeBDiagCursor
++        onPressed: root.startSystemResize(Qt.TopEdge | Qt.RightEdge)
++    }
++    MouseArea {
++        x: 0
++        y: root.height - root.resizeHandle
++        width: root.resizeHandle
++        height: root.resizeHandle
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeBDiagCursor
++        onPressed: root.startSystemResize(Qt.BottomEdge | Qt.LeftEdge)
++    }
++    MouseArea {
++        x: root.width - root.resizeHandle
++        y: root.height - root.resizeHandle
++        width: root.resizeHandle
++        height: root.resizeHandle
++        visible: Qt.platform.os === "linux"
++        cursorShape: Qt.SizeFDiagCursor
++        onPressed: root.startSystemResize(Qt.BottomEdge | Qt.RightEdge)
++    }
++
+     Component.onCompleted: {
+         App.messageReceived.connect(root.alert);
+         mainWindow.controls.minimizeRequested.connect(root.showMinimized);
