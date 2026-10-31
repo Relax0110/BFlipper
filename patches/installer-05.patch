@@ -110,6 +110,37 @@ index 0cdc5a2..0228ba3 100644
          onTriggered: control.repeat()
      }
  }
+diff --git a/application/components/MainWindow.qml b/application/components/MainWindow.qml
+index 8ee9b20..480b455 100644
+--- a/application/components/MainWindow.qml
++++ b/application/components/MainWindow.qml
+@@ -40,11 +40,11 @@ Item {
+         }
+     }
+ 
+-    width: baseWidth
+-    height: baseHeight
++    width: parent ? parent.width - shadowSize * 2 : baseWidth
++    height: parent ? parent.height - shadowSize * 2 : baseHeight
+ 
+-    x: shadowSize
+-    y: shadowSize - shadowOffset
++    x: 0
++    y: 0
+ 
+     Pf.Menu {
+         Pf.MenuItem {
+@@ -150,8 +150,8 @@ Item {
+         anchors.horizontalCenter: parent.horizontalCenter
+         y: 38
+ 
+-        width: 800 + border.width * 2
+-        height: 390 + border.width * 2
++        width: parent.width - 30
++        height: parent.height - 110
+ 
+         TextLabel {
+             id: versionLabel
 diff --git a/application/components/NoDeviceOverlay.qml b/application/components/NoDeviceOverlay.qml
 index d4da985..6f734f6 100644
 --- a/application/components/NoDeviceOverlay.qml
@@ -251,6 +282,43 @@ index 8bc2434..4c5a82d 100644
  
      Application app(argc, argv);
      return app.exec();
+diff --git a/application/main.qml b/application/main.qml
+index ceb0ba6..4f43b73 100644
+--- a/application/main.qml
++++ b/application/main.qml
+@@ -8,22 +8,26 @@ import "components"
+ Window {
+     id: root
+     visible: true
+-    flags: Qt.Window | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
++    flags: Qt.platform.os === "linux" ? Qt.Window : Qt.Window | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
+     title: Qt.application.displayName
+ 
+     width: mainWindow.baseWidth + mainWindow.shadowSize * 2
+     height: mainWindow.baseHeight + mainWindow.shadowSize * 2
+ 
+-    minimumWidth: mainWindow.baseWidth + mainWindow.shadowSize * 2
+-    minimumHeight: mainWindow.baseHeight + mainWindow.shadowSize * 2
++    minimumWidth: Qt.platform.os === "linux" ? 640 : mainWindow.baseWidth + mainWindow.shadowSize * 2
++    minimumHeight: Qt.platform.os === "linux" ? 400 : mainWindow.baseHeight + mainWindow.shadowSize * 2
+ 
+-    maximumWidth: minimumWidth
+-    maximumHeight: minimumHeight
++    maximumWidth: Qt.platform.os === "linux" ? 16777215 : minimumWidth
++    maximumHeight: Qt.platform.os === "linux" ? 16777215 : minimumHeight
+ 
+-    color: "transparent"
++    color: Qt.platform.os === "linux" ? "#000000" : "transparent"
+ 
+     MainWindow {
+         id: mainWindow
++        x: shadowSize
++        y: shadowSize - shadowOffset
++        width: root.width - shadowSize * 2
++        height: root.height - shadowSize * 2
+ 
+         onExpandStarted: {
+             root.maximumHeight = baseHeight + logHeight + shadowSize * 2;
 diff --git a/application/screencanvas.cpp b/application/screencanvas.cpp
 index e1c0ca9..ea23657 100644
 --- a/application/screencanvas.cpp
