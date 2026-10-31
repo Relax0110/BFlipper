@@ -5,9 +5,8 @@ UPSTREAM_REF="1d26683ff5b751f219a4e40443b7c8355eb39469"
 PATCH_DIR="/usr/share/bflipper-installer/patches"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bflipper.XXXXXX")"
 PREFIX="$HOME/.local/opt/BFlipper"
-ROOT_HELPER_DIR="/usr/lib/bflipper"
 BUILD_DEPS=(
-  build-essential ca-certificates git pkg-config qmake6 qt6-base-dev
+  build-essential ca-certificates git pkg-config python3 qmake6 qt6-base-dev
   qt6-declarative-dev qt6-svg-dev qt6-serialport-dev qt6-connectivity-dev
   qt6-5compat-dev qt6-l10n-tools libusb-1.0-0-dev zlib1g-dev bluez
 )
