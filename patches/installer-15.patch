@@ -1,0 +1,28 @@
+diff --git a/application/components/KeypadButton.qml b/application/components/KeypadButton.qml
+index 0000000..0000000 100644
+--- a/application/components/KeypadButton.qml
++++ b/application/components/KeypadButton.qml
+@@ -39,7 +39,9 @@
+     }
+ 
+     function onButtonReleased() {
+-        releaseTimer.start();
++        // Send release before Short: the Flipper emits a short event only
++        // after the release event, and delaying release made taps feel laggy.
++        control.released();
+ 
+         if(longTimer.running) {
+             longTimer.stop();
+@@ -68,13 +70,6 @@
+         onReleased: onButtonReleased()
+     }
+ 
+-    Timer {
+-        id: releaseTimer
+-        repeat: false
+-        interval: 1
+-        onTriggered: control.released()
+-    }
+-
+     Timer {
+         id: longTimer
