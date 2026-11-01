@@ -1,0 +1,146 @@
+--- a/application/blespike.cpp
++++ b/application/blespike.cpp
+@@ -4,6 +4,7 @@
+ #include <QLowEnergyDescriptor>
+ #include <QBluetoothAddress>
+ #include <QSerialPortInfo>
++#include <QTimer>
+ 
+ #include "bletransport.h"
+ #include "abstractoperation.h"
+@@ -30,12 +31,20 @@
+     : QObject(parent)
+ {
+     m_agent = new QBluetoothDeviceDiscoveryAgent(this);
+-    m_agent->setLowEnergyDiscoveryTimeout(8000);
++    m_agent->setLowEnergyDiscoveryTimeout(40000);
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered, this, &BleSpike::onDeviceDiscovered);
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::finished, this, [this]() {
+         setScanning(false);
+         log(QStringLiteral("scan finished (%1 device(s)).").arg(m_found.size()));
+     });
++    connect(m_agent, &QBluetoothDeviceDiscoveryAgent::canceled, this, [this]() {
++        setScanning(false);
++        if(m_pendingConnectIndex >= 0) {
++            const int index = m_pendingConnectIndex;
++            m_pendingConnectIndex = -1;
++            QTimer::singleShot(0, this, [this, index]() { beginConnectDevice(index); });
++        }
++    });
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::errorOccurred, this,
+             [this](QBluetoothDeviceDiscoveryAgent::Error) {
+         setScanning(false);
+@@ -79,16 +88,33 @@
+     m_found.clear();
+     emit devicesChanged();
+     m_status.clear();
+-    log(QStringLiteral("scanning for BLE devices (~8s)…"));
++    log(QStringLiteral("scanning for BLE devices (up to 40s)…"));
+     setScanning(true);
+     m_agent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+ }
+ 
++void BleSpike::stopScan()
++{
++    if(m_scanning && m_agent) {
++        m_agent->stop();
++    }
++}
++
+ void BleSpike::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
+ {
+-    if (!(info.coreConfigurations() & QBluetoothDeviceInfo::LowEnergyCoreConfiguration)) { return; }
+-    for (const QBluetoothDeviceInfo &d : m_found) {
+-        if (d.deviceUuid() == info.deviceUuid() && d.address() == info.address()) { return; }
++    // Some BlueZ/Qt combinations cannot classify discovery results without
++    // CAP_NET_ADMIN and report UnknownCoreConfiguration. LowEnergyMethod is
++    // already requested, so only discard devices known to be Classic-only.
++    if(info.coreConfigurations() == QBluetoothDeviceInfo::BaseRateCoreConfiguration) { return; }
++
++    for(QBluetoothDeviceInfo &d : m_found) {
++        if(d.deviceUuid() == info.deviceUuid() && d.address() == info.address()) {
++            if(d.name() != info.name()) {
++                d = info;
++                emit devicesChanged();
++            }
++            return;
++        }
+     }
+     m_found.append(info);
+     // Flipper can be renamed by the user, and some platforms don't include
+@@ -326,10 +352,18 @@
+     if (!m_reg) { log(QStringLiteral("[main] device registry unavailable.")); return; }
+ 
+     if(m_scanning && m_agent) {
++        m_pendingConnectIndex = index;
+         m_agent->stop();
+-        setScanning(false);
++        return;
+     }
+ 
++    beginConnectDevice(index);
++}
++
++void BleSpike::beginConnectDevice(int index)
++{
++    if(index < 0 || index >= m_found.size() || !m_reg) { return; }
++
+     // One BLE central link at a time -- drop any in-panel proof/spike link first.
+     disconnectDevice();
+     disconnectSession();
+--- a/application/blespike.h
++++ b/application/blespike.h
+@@ -42,7 +42,8 @@
+     bool connected() const { return m_connected; }
+     bool sessionActive() const { return m_sessionActive; }
+ 
+-    Q_INVOKABLE void scan();              // start LE discovery (~8s)
++    Q_INVOKABLE void scan();              // start reliable LE discovery (40s)
++    Q_INVOKABLE void stopScan();
+     Q_INVOKABLE void connectToDevice(int index);
+     Q_INVOKABLE void ping();              // poke the CLI (send "\r\n") to prove the RX write path
+     Q_INVOKABLE void disconnectDevice();
+@@ -70,6 +71,7 @@
+     void setConnected(bool v);
+     void setSessionActive(bool v);
+     void onDeviceDiscovered(const QBluetoothDeviceInfo &info);
++    void beginConnectDevice(int index);
+     void onServiceStateChanged(QLowEnergyService::ServiceState s);
+     void onCharacteristicChanged(const QLowEnergyCharacteristic &c, const QByteArray &value);
+ 
+@@ -95,4 +97,5 @@
+     bool    m_scanning = false;
+     bool    m_connected = false;
+     bool    m_sessionActive = false;
++    int     m_pendingConnectIndex = -1;
+ };
+--- a/application/components/NoDeviceOverlay.qml
++++ b/application/components/NoDeviceOverlay.qml
+@@ -52,7 +52,7 @@
+         TextLabel {
+             anchors.centerIn: parent
+             color: Theme.color.lightorange2
+-            text: Ble.scanning ? qsTr("Scanning for Flippers…") : qsTr("Connect over Bluetooth")
++            text: Ble.scanning ? qsTr("Stop scanning") : qsTr("Connect over Bluetooth")
+             font.pixelSize: 16
+         }
+ 
+@@ -60,11 +60,14 @@
+             id: bleMouse
+             anchors.fill: parent
+             hoverEnabled: true
+-            enabled: !Ble.scanning
+-            cursorShape: enabled ? Qt.PointingHandCursor : Qt.WaitCursor
++            cursorShape: Qt.PointingHandCursor
+             onClicked: {
+-                bleError.text = ""
+-                Ble.scan()
++                if(Ble.scanning) {
++                    Ble.stopScan()
++                } else {
++                    bleError.text = ""
++                    Ble.scan()
++                }
+             }
+         }
+     }
