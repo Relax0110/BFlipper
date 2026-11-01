@@ -2,9 +2,16 @@ diff --git a/application/components/KeypadButton.qml b/application/components/Ke
 index 0000000..0000000 100644
 --- a/application/components/KeypadButton.qml
 +++ b/application/components/KeypadButton.qml
-@@ -39,7 +39,9 @@
+@@ -33,7 +33,4 @@
+         if(!longTimer.running) {
+             longTimer.start();
+         }
+-
+-        if(releaseTimer.running) {
+-           releaseTimer.stop();
+-        }
      }
- 
+@@ -42,7 +39,9 @@
      function onButtonReleased() {
 -        releaseTimer.start();
 +        // Send release before Short: the Flipper emits a short event only
@@ -13,7 +20,7 @@ index 0000000..0000000 100644
  
          if(longTimer.running) {
              longTimer.stop();
-@@ -68,12 +70,5 @@
+@@ -66,12 +65,5 @@
          onReleased: onButtonReleased()
      }
  
