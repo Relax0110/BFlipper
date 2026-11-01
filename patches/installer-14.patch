@@ -1,0 +1,43 @@
+--- a/application/blespike.cpp
++++ b/application/blespike.cpp
+@@ -62,6 +62,11 @@ BleSpike::BleSpike(QObject *parent)
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::finished, this, [this]() {
+         setScanning(false);
+         log(QStringLiteral("scan finished (%1 device(s)).").arg(m_found.size()));
++        if(m_pendingConnectIndex >= 0) {
++            const int index = m_pendingConnectIndex;
++            m_pendingConnectIndex = -1;
++            QTimer::singleShot(0, this, [this, index]() { beginConnectDevice(index); });
++        }
+     });
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::canceled, this, [this]() {
+         setScanning(false);
+@@ -390,6 +395,16 @@ void BleSpike::connectDevice(int index)
+     if(m_scanning && m_agent) {
+         m_pendingConnectIndex = index;
+         m_agent->stop();
++        // Some Qt/BlueZ combinations stop discovery with finished() instead
++        // of canceled(), and some fail to emit either promptly. Don't leave a
++        // selected device stuck in the pending state forever.
++        QTimer::singleShot(1500, this, [this]() {
++            if(m_pendingConnectIndex < 0) { return; }
++            const int pendingIndex = m_pendingConnectIndex;
++            m_pendingConnectIndex = -1;
++            setScanning(false);
++            log(QStringLiteral("scan stop callback timed out; continuing connection."));
++            beginConnectDevice(pendingIndex);
++        });
+         return;
+     }
+ 
+--- a/application/bletransport.cpp
++++ b/application/bletransport.cpp
+@@ -51,7 +51,10 @@ void BleTransport::startConnection()
+ {
+     ++m_connectAttempts;
+-    m_openTimeout->start(15000);
++    // First-time Flipper links can pause for BlueZ passkey pairing. Keep the
++    // controller alive long enough for the user or desktop pairing agent to
++    // finish that exchange instead of retrying and aborting the pairing.
++    m_openTimeout->start(60000);
+     m_ctrl = QLowEnergyController::createCentral(m_device, this);
