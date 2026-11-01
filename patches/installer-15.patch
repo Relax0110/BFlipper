@@ -13,7 +13,7 @@ index 0000000..0000000 100644
  
          if(longTimer.running) {
              longTimer.stop();
-@@ -68,13 +70,6 @@
+@@ -68,12 +70,5 @@
          onReleased: onButtonReleased()
      }
  
