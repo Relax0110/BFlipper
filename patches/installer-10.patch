@@ -1,0 +1,170 @@
+--- a/application/bletransport.cpp
++++ b/application/bletransport.cpp
+@@ -19,7 +19,12 @@
+ BleTransport::BleTransport(const QBluetoothDeviceInfo &device, QObject *parent)
+     : Flipper::Zero::FlipperTransport(parent)
+     , m_device(device)
++    , m_openTimeout(new QTimer(this))
+ {
++    m_openTimeout->setSingleShot(true);
++    connect(m_openTimeout, &QTimer::timeout, this, [this]() {
++        retryConnection(QStringLiteral("Bluetooth connection setup timed out."));
++    });
+ }
+ 
+ BleTransport::~BleTransport()
+@@ -47,13 +52,16 @@
+ void BleTransport::startConnection()
+ {
+     ++m_connectAttempts;
++    m_openTimeout->start(15000);
+     m_ctrl = QLowEnergyController::createCentral(m_device, this);
+ 
+     connect(m_ctrl, &QLowEnergyController::connected, this, [this]() {
+-        // Request a short BLE interval for responsive input and screen updates.
+-        // The peripheral may negotiate a different value or reject the request.
++        // Stay within the Flipper's supported interval range; asking for a
++        // shorter interval makes it repeatedly renegotiate the BLE link.
+         QLowEnergyConnectionParameters parameters;
+-        parameters.setIntervalRange(7.5, 15.0);
++        // Flipper firmware requires at least 30 ms to keep its BLE radio
++        // controller stable while flash operations are available.
++        parameters.setIntervalRange(30.0, 45.0);
+         parameters.setLatency(0);
+         m_ctrl->requestConnectionUpdate(parameters);
+         m_ctrl->discoverServices();
+@@ -85,14 +93,25 @@
+ 
+ void BleTransport::retryConnection(const QString &reason)
+ {
++    if(m_closing || m_opened || m_failed) {
++        return;
++    }
++    if(m_connectAttempts >= 3) {
++        fail(reason);
++        return;
++    }
++
++    m_openTimeout->stop();
+     m_error = reason;
+     QLowEnergyController *failed = m_ctrl;
+     m_ctrl = nullptr;
+ 
+     if(m_serial) {
++        m_serial->disconnect(this);
+         m_serial->deleteLater();
+         m_serial = nullptr;
+     }
++    m_rx = QLowEnergyCharacteristic();
+ 
+     if(failed) {
+         failed->disconnect(this);
+@@ -120,15 +139,26 @@
+ 
+ void BleTransport::onDiscoveryFinished()
+ {
++    if(!m_ctrl || m_closing || m_failed) {
++        return;
++    }
++
+     m_serial = m_ctrl->createServiceObject(kSerialService, this);
+     if(!m_serial) {
+-        fail(QStringLiteral("Flipper Serial GATT service not found on this device."));
++        retryConnection(QStringLiteral("Flipper Serial GATT service was not found; retrying."));
+         return;
+     }
+ 
+     if(m_ctrl->mtu() > 3) { m_mtu = m_ctrl->mtu() - 3; }
+ 
+     connect(m_serial, &QLowEnergyService::stateChanged, this, &BleTransport::onServiceStateChanged);
++    connect(m_serial, &QLowEnergyService::errorOccurred, this, [this](QLowEnergyService::ServiceError) {
++        if(m_opened) {
++            fail(QStringLiteral("Bluetooth GATT operation failed."));
++        } else {
++            retryConnection(QStringLiteral("Flipper Serial GATT setup failed; retrying."));
++        }
++    });
+     connect(m_serial, &QLowEnergyService::descriptorWritten, this, &BleTransport::onDescriptorWritten);
+     connect(m_serial, &QLowEnergyService::characteristicWritten, this, &BleTransport::onCharacteristicWritten);
+     connect(m_serial, &QLowEnergyService::characteristicChanged, this, &BleTransport::onCharacteristicChanged);
+@@ -138,6 +168,10 @@
+ 
+ void BleTransport::onServiceStateChanged(QLowEnergyService::ServiceState s)
+ {
++    if(s == QLowEnergyService::InvalidService) {
++        retryConnection(QStringLiteral("Flipper Serial GATT service discovery failed; retrying."));
++        return;
++    }
+     if(s != QLowEnergyService::RemoteServiceDiscovered) {
+         return;
+     }
+@@ -145,7 +179,7 @@
+     const QLowEnergyCharacteristic tx = m_serial->characteristic(kTxChar);
+     m_rx = m_serial->characteristic(kRxChar);
+     if(!tx.isValid() || !m_rx.isValid()) {
+-        fail(QStringLiteral("Flipper Serial TX/RX characteristics missing."));
++        retryConnection(QStringLiteral("Flipper Serial TX/RX characteristics were not ready; retrying."));
+         return;
+     }
+ 
+@@ -160,7 +194,7 @@
+     const QLowEnergyDescriptor cccd =
+             tx.descriptor(QBluetoothUuid(QBluetoothUuid::DescriptorType::ClientCharacteristicConfiguration));
+     if(!cccd.isValid()) {
+-        fail(QStringLiteral("Flipper TX characteristic has no CCCD to subscribe to."));
++        retryConnection(QStringLiteral("Flipper TX subscription descriptor was not ready; retrying."));
+         return;
+     }
+ 
+@@ -199,7 +233,7 @@
+ {
+     const QLowEnergyCharacteristic rpc = m_serial->characteristic(kRpcStatus);
+     if(!rpc.isValid()) {
+-        fail(QStringLiteral("Flipper RPC-status characteristic not found."));
++        retryConnection(QStringLiteral("Flipper RPC-status characteristic was not ready; retrying."));
+         return;
+     }
+ 
+@@ -226,6 +260,7 @@
+     }
+     m_opened = true;
+     m_handshakeStep = 4;
++    m_openTimeout->stop();
+     emit opened();
+ }
+ 
+@@ -340,6 +375,7 @@
+     if(m_closing || m_failed) {
+         return;
+     }
++    m_openTimeout->stop();
+     m_failed = true;
+     m_error = why;
+ 
+@@ -353,6 +389,7 @@
+ void BleTransport::close()
+ {
+     m_closing = true;
++    m_openTimeout->stop();
+ 
+     if(m_serial) {
+         m_serial->deleteLater();
+--- a/application/bletransport.h
++++ b/application/bletransport.h
+@@ -11,6 +11,8 @@
+ #include <QLowEnergyCharacteristic>
+ #include <QLowEnergyDescriptor>
+ 
++class QTimer;
++
+ // FlipperTransport over Bluetooth LE. Speaks the Flipper's Serial GATT service,
+ // which carries the exact same RPC/protobuf byte stream as USB CDC, so once the
+ // link is up, ProtobufSession neither knows nor cares that it is wireless.
+@@ -64,6 +66,7 @@
+     QBluetoothDeviceInfo      m_device;
+     QLowEnergyController     *m_ctrl = nullptr;
+     QLowEnergyService        *m_serial = nullptr;
++    QTimer                   *m_openTimeout = nullptr;
+     QLowEnergyCharacteristic  m_rx;          // cached write endpoint
+ 
+     QByteArray m_incoming;                   // received, awaiting readAll()

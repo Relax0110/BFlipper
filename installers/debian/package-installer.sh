@@ -10,8 +10,6 @@ STAGE="$OUTPUT_DIR/stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/bflipper-installer/patches"
 install -m 0755 "$ROOT/installers/debian/install-bflipper" "$STAGE/usr/bin/bflipper-install"
-install -m 0644 "$ROOT/bflipper-ble-interval" "$STAGE/usr/share/bflipper-installer/bflipper-ble-interval"
-install -m 0644 "$ROOT/bflipper-ble-interval.service" "$STAGE/usr/share/bflipper-installer/bflipper-ble-interval.service"
 for patch in "$ROOT"/patches/installer-*.patch; do
   install -m 0644 "$patch" "$STAGE/usr/share/bflipper-installer/patches/"
 done

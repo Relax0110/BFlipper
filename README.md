@@ -9,11 +9,11 @@ The installer package contains only the BFlipper patches and setup scripts. It d
 Download the installer from the repository's latest successful **BFlipper installers** workflow run. Expand its artifact ZIP, then:
 
 - **Debian 12 or newer, amd64:** install `bflipper-installer_*_all.deb`, then run `bflipper-install` as your normal user.
-- **Debian 12 or newer, ARM64 (including uConsole CM5/Kali):** install `bflipper-installer_*_arm64.deb`, then run `bflipper-install` as your normal user. It builds natively under `~/.local/opt/BFlipper`, selects Qt's software scene graph to avoid llvmpipe CPU saturation, keeps the original frameless style while allowing resizing and half-screen snapping, configures BlueZ for short BLE intervals, and installs a service that requests a 7.5 ms interval for connected Flipper Serial devices.
+- **Debian 12 or newer, ARM64 (including uConsole CM5/Kali):** install `bflipper-installer_*_arm64.deb`, then run `bflipper-install` as your normal user. It builds natively under `~/.local/opt/BFlipper`, selects Qt's software scene graph to avoid llvmpipe CPU saturation, keeps the original frameless style while allowing resizing and half-screen snapping, and requests a firmware-compatible 30–45 ms BLE connection interval for stable links.
 - **macOS:** install the official qFlipper app, Homebrew, and Apple Command Line Tools first. Open the downloaded DMG and run `Install-BFlipper.command` from Terminal. It installs Homebrew build dependencies and places BFlipper in `~/Applications/BFlipper.app`.
 - **Windows 11, x64:** install the official qFlipper app, then run `BFlipper-Setup.exe`. It requests administrator access to install Git, Python, Visual Studio C++ Build Tools, and Qt when needed. It builds BFlipper under `%LOCALAPPDATA%\Programs\BFlipper`.
 
-The first installation downloads qFlipper source and build tools and may take several minutes. An internet connection is required. The ARM64 installer restarts Bluetooth when it applies the BlueZ configuration. The installers are unsigned community tools, so macOS or Windows may show an operating-system warning before running them.
+The first installation downloads qFlipper source and build tools and may take several minutes. An internet connection is required. The ARM64 installer removes the old custom interval override and restarts Bluetooth if it restores a prior BlueZ configuration backup. The installers are unsigned community tools, so macOS or Windows may show an operating-system warning before running them.
 
 ## Connect
 

@@ -62,41 +62,16 @@ ln -sf "$PREFIX/bin/qFlipper" "$HOME/.local/bin/bflipper"
 # Prefer Qt's software scene graph on Linux systems where X11 exposes only
 # llvmpipe; that renderer can otherwise saturate small ARM systems.
 
-# Configure BlueZ's default interval range for new LE links.
-sudo install -d -m 0755 /etc/systemd/system /usr/local/sbin "$ROOT_HELPER_DIR"
-if ! sudo test -e /etc/bluetooth/main.conf.bflipper-backup; then
-  sudo cp -a /etc/bluetooth/main.conf /etc/bluetooth/main.conf.bflipper-backup
-fi
-sudo python3 - <<'PY'
-from pathlib import Path
-
-path = Path('/etc/bluetooth/main.conf')
-text = path.read_text()
-start = text.find('[LE]')
-if start < 0:
-    raise SystemExit('BlueZ main.conf has no [LE] section')
-end = text.find('\n[', start + 1)
-if end < 0:
-    end = len(text)
-section = text[start:end]
-values = {
-    'MinConnectionInterval': '0x0006',
-    'MaxConnectionInterval': '0x000c',
-    'ConnectionLatency': '0',
-    'ConnectionSupervisionTimeout': '0x00c8',
-}
-for key, value in values.items():
-    import re
-    section, count = re.subn(rf'(?m)^#?{key}=.*$', f'{key}={value}', section)
-    if count == 0:
-        section += f'\n{key}={value}'
-path.write_text(text[:start] + section + text[end:])
-PY
-sudo install -m 0755 "$PATCH_DIR/../bflipper-ble-interval" /usr/local/sbin/bflipper-ble-interval
-sudo install -m 0644 "$PATCH_DIR/../bflipper-ble-interval.service" /etc/systemd/system/bflipper-ble-interval.service
+# Remove the old forced 7.5 ms interval helper. Flipper firmware requires
+# at least 30 ms, and repeated conflicting updates can destabilize the link.
+sudo systemctl disable --now bflipper-ble-interval.service >/dev/null 2>&1 || true
+sudo rm -f /etc/systemd/system/bflipper-ble-interval.service /usr/local/sbin/bflipper-ble-interval
 sudo systemctl daemon-reload
-sudo systemctl enable --now bflipper-ble-interval.service
-sudo systemctl restart bluetooth
+if sudo test -f /etc/bluetooth/main.conf.bflipper-backup; then
+  sudo cp -a /etc/bluetooth/main.conf.bflipper-backup /etc/bluetooth/main.conf
+  sudo rm -f /etc/bluetooth/main.conf.bflipper-backup
+  sudo systemctl restart bluetooth
+fi
 
 echo "BFlipper is installed side-by-side with qFlipper. Launch it from the app menu or run: $HOME/.local/bin/bflipper"
-echo "The uConsole BLE interval service is active. Log out and back in if the render group was newly added."
+echo "BFlipper uses the Flipper-supported BLE interval range for stable connections."
