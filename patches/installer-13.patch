@@ -1,0 +1,14 @@
+--- a/application/blespike.cpp
++++ b/application/blespike.cpp
+@@ -126,6 +126,11 @@
+ 
+ void BleSpike::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
+ {
++    // This panel is a Flipper picker, not a general Bluetooth browser. Keep
++    // unrelated nearby BLE devices out of the model so unnamed devices cannot
++    // bury the Flipper or overwhelm the list on busy radios.
++    if(!isFlipperAdvertisement(info)) { return; }
++
+     // Some BlueZ/Qt combinations cannot classify discovery results without
+     // CAP_NET_ADMIN and report UnknownCoreConfiguration. LowEnergyMethod is
+     // already requested, so only discard devices known to be Classic-only.
