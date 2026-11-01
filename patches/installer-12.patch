@@ -1,0 +1,80 @@
+--- a/application/blespike.cpp
++++ b/application/blespike.cpp
+@@ -5,6 +5,7 @@
+ #include <QBluetoothAddress>
+ #include <QSerialPortInfo>
+ #include <QTimer>
++#include <algorithm>
+ 
+ #include "bletransport.h"
+ #include "abstractoperation.h"
+@@ -27,12 +28,32 @@
+ const QBluetoothUuid BleSpike::kRpcStatus =
+         QBluetoothUuid(QStringLiteral("19ed82ae-ed21-4c9d-4145-228e64fe0000")); // write 0x01 = start RPC
+ 
++static bool isFlipperAdvertisement(const QBluetoothDeviceInfo &info)
++{
++    if(info.name().contains(QStringLiteral("flipper"), Qt::CaseInsensitive)) {
++        return true;
++    }
++
++    for(const QBluetoothUuid &uuid : info.serviceUuids()) {
++        bool ok = false;
++        const quint16 shortUuid = uuid.toUInt16(&ok);
++        if(ok && shortUuid >= 0x3080 && shortUuid <= 0x3083) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ BleSpike::BleSpike(QObject *parent)
+     : QObject(parent)
+ {
+     m_agent = new QBluetoothDeviceDiscoveryAgent(this);
+     m_agent->setLowEnergyDiscoveryTimeout(40000);
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered, this, &BleSpike::onDeviceDiscovered);
++    connect(m_agent, &QBluetoothDeviceDiscoveryAgent::deviceUpdated, this,
++            [this](const QBluetoothDeviceInfo &info, QBluetoothDeviceInfo::Fields) {
++        onDeviceDiscovered(info);
++    });
+     connect(m_agent, &QBluetoothDeviceDiscoveryAgent::finished, this, [this]() {
+         setScanning(false);
+         log(QStringLiteral("scan finished (%1 device(s)).").arg(m_found.size()));
+@@ -73,7 +94,10 @@
+     QVariantList out;
+     for (const QBluetoothDeviceInfo &d : m_found) {
+         QVariantMap m;
+-        m.insert(QStringLiteral("name"), d.name().isEmpty() ? QStringLiteral("(unnamed)") : d.name());
++        const QString name = d.name().isEmpty() && isFlipperAdvertisement(d)
++                ? QStringLiteral("Flipper Zero")
++                : d.name().isEmpty() ? QStringLiteral("(unnamed)") : d.name();
++        m.insert(QStringLiteral("name"), name);
+         const QString addr = d.address().toString();
+         m.insert(QStringLiteral("address"), addr == QStringLiteral("00:00:00:00:00:00") || addr.isEmpty()
+                                              ? d.deviceUuid().toString() : addr);
+@@ -109,14 +133,23 @@
+ 
+     for(QBluetoothDeviceInfo &d : m_found) {
+         if(d.deviceUuid() == info.deviceUuid() && d.address() == info.address()) {
+-            if(d.name() != info.name()) {
++            if(d.name() != info.name() || d.serviceUuids() != info.serviceUuids() ||
++               d.coreConfigurations() != info.coreConfigurations()) {
+                 d = info;
++                std::stable_sort(m_found.begin(), m_found.end(), [](const QBluetoothDeviceInfo &left,
++                                                                    const QBluetoothDeviceInfo &right) {
++                    return isFlipperAdvertisement(left) && !isFlipperAdvertisement(right);
++                });
+                 emit devicesChanged();
+             }
+             return;
+         }
+     }
+     m_found.append(info);
++    std::stable_sort(m_found.begin(), m_found.end(), [](const QBluetoothDeviceInfo &left,
++                                                        const QBluetoothDeviceInfo &right) {
++        return isFlipperAdvertisement(left) && !isFlipperAdvertisement(right);
++    });
+     // Flipper can be renamed by the user, and some platforms don't include
+     // advertised service UUIDs in discovery results. Keep every LE peripheral
+     // visible; the Flipper Serial service is checked after connecting.
