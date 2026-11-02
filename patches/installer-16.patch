@@ -1,0 +1,11 @@
+diff --git a/backend/flipperzero/rpc/guisendinputoperation.h b/backend/flipperzero/rpc/guisendinputoperation.h
+--- a/backend/flipperzero/rpc/guisendinputoperation.h
++++ b/backend/flipperzero/rpc/guisendinputoperation.h
+@@ -12,7 +12,6 @@ class GuiSendInputOperation : public AbstractProtobufOperation
+ public:
+     GuiSendInputOperation(uint32_t id, int key, int type, QObject *parent = nullptr);
+     const QString description() const override;
+-    bool completesOnWrite() const override { return true; }
+     const QByteArray encodeRequest(ProtobufPluginInterface *encoder) override;
+ 
+ private:
