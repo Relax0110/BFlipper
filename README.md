@@ -16,7 +16,7 @@ The installers build BFlipper on your computer from pinned qFlipper source. The 
 
 ## Downloads and access
 
-This repository is private, so users need repository access to download Actions artifacts or GitHub Releases. A tagged version such as `v1.0.0` publishes direct installer downloads on the [Releases page](https://github.com/Relax0110/BFlipper/releases). The latest successful workflow run provides the newest installer artifacts before a versioned release is published.
+If the repository is private, users need read access to download Actions artifacts or GitHub Releases. Once it is public, anyone can download them. A tagged version such as `v1.0.0` publishes direct installer downloads on the [Releases page](https://github.com/Relax0110/BFlipper/releases). The latest successful workflow run provides the newest installer artifacts before a versioned release is published.
 
 ## Connect
 
@@ -26,4 +26,4 @@ On the Flipper Zero, enable **Settings → Bluetooth**. Open BFlipper, choose **
 
 GitHub Actions packages Debian installers for amd64 and ARM64, a macOS DMG, and a Windows setup EXE. The installer packages contain BFlipper patches and setup scripts, not prebuilt qFlipper application binaries.
 
-The BLE patch is based on upstream qFlipper revision `1d26683ff5b751f219a4e40443b7c8355eb39469`. qFlipper is distributed under GPL-3.0; see the [upstream qFlipper repository](https://github.com/flipperdevices/qFlipper) and its license before redistributing builds.
+BFlipper patches and installer scripts are distributed under GPL-3.0; see [LICENSE](LICENSE). The BLE patch is based on upstream qFlipper revision `1d26683ff5b751f219a4e40443b7c8355eb39469`. qFlipper is also distributed under GPL-3.0; see the [upstream qFlipper repository](https://github.com/flipperdevices/qFlipper).

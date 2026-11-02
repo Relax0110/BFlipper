@@ -4,7 +4,7 @@ BFlipper is a BLE-enabled build of qFlipper. It is built on your computer from a
 
 ## 1. Download an installer
 
-Open the [BFlipper installers workflow](https://github.com/Relax0110/BFlipper/actions/workflows/release.yml) and sign in to an account that can read this repository.
+Open the [BFlipper installers workflow](https://github.com/Relax0110/BFlipper/actions/workflows/release.yml). If the repository is private, sign in to an account that has read access. Once the repository is public, no GitHub sign-in is needed.
 
 1. Open the latest successful run for the `main` branch.
 2. Scroll to **Artifacts**.
@@ -14,7 +14,7 @@ Open the [BFlipper installers workflow](https://github.com/Relax0110/BFlipper/ac
    - **Windows:** `BFlipper-Windows11-Installer`
 4. Extract the downloaded ZIP. The installer file is inside it.
 
-The Actions artifacts are available to people with repository access. For a tagged version, the same installers are attached as direct downloads on the repository's [Releases page](https://github.com/Relax0110/BFlipper/releases).
+While the repository is private, Actions artifacts and releases are limited to people with repository access. Once public, anyone can download them. For a tagged version, the same installers are attached as direct downloads on the [Releases page](https://github.com/Relax0110/BFlipper/releases).
 
 ## 2. Install
 
@@ -72,6 +72,6 @@ No system-level Bluetooth pairing is required. Screen control and normal RPC fea
 
 ## Build and release details
 
-The installers contain setup scripts and BFlipper patches, not prebuilt application binaries. The workflow builds the installers for Debian amd64 and ARM64, macOS, and Windows x64. Pushing a version tag such as `v1.0.0` creates a GitHub Release with direct installer downloads.
+The installers contain setup scripts and BFlipper patches, not prebuilt application binaries. The workflow builds the installers for Debian amd64 and ARM64, macOS, and Windows x64. The Windows and macOS installers are unsigned community tools, so those operating systems may show a security warning; only run files downloaded from the official BFlipper repository. Pushing a version tag such as `v1.0.0` creates a GitHub Release with direct installer downloads.
 
-The BLE patch is based on qFlipper revision `1d26683ff5b751f219a4e40443b7c8355eb39469`. qFlipper is distributed under GPL-3.0; see the [upstream qFlipper repository](https://github.com/flipperdevices/qFlipper) and its license before redistributing builds.
+BFlipper patches and installer scripts are distributed under GPL-3.0; see [LICENSE](LICENSE). The BLE patch is based on qFlipper revision `1d26683ff5b751f219a4e40443b7c8355eb39469`. qFlipper is also distributed under GPL-3.0; see the [upstream qFlipper repository](https://github.com/flipperdevices/qFlipper).
