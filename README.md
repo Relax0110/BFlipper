@@ -1,26 +1,29 @@
 # BFlipper
 
-BFlipper is a BLE-enabled build of the qFlipper desktop application. Install the official qFlipper app first. Then run the BFlipper installer for your system to build a separate BFlipper app beside it. The installer leaves the official qFlipper app in place.
+BFlipper is a BLE-enabled build of the qFlipper desktop application. It installs separately and leaves the official qFlipper app in place.
 
-The installer package contains only the BFlipper patches and setup scripts. It does not contain qFlipper source code or application binaries. During installation it downloads the pinned public qFlipper source revision, applies the patches, and builds BFlipper on the computer.
+## Quick install
 
-## Install
+1. Sign in to GitHub with an account that can read this repository.
+2. Open the [BFlipper installers workflow](https://github.com/Relax0110/BFlipper/actions/workflows/release.yml).
+3. Open the latest successful run on `main`, then download the artifact for your platform:
+   - Debian: `BFlipper-Debian12-Installer`
+   - macOS: `BFlipper-macOS-Installer`
+   - Windows: `BFlipper-Windows11-Installer`
+4. Extract the downloaded ZIP and follow the steps in the **[complete installation guide](INSTALL.md)**.
 
-Download the installer from the repository's latest successful **BFlipper installers** workflow run. Expand its artifact ZIP, then:
+The installers build BFlipper on your computer from pinned qFlipper source. The first install downloads source code and build tools, so keep an internet connection available. The Windows installer is for Windows 11 x64 and requires App Installer (`winget`); it installs missing build tools and asks for administrator approval. The Debian installer supports amd64 and ARM64, including uConsole CM5/Kali. macOS requires Homebrew and Apple Command Line Tools.
 
-- **Debian 12 or newer, amd64:** install `bflipper-installer_*_all.deb`, then run `bflipper-install` as your normal user.
-- **Debian 12 or newer, ARM64 (including uConsole CM5/Kali):** install `bflipper-installer_*_arm64.deb`, then run `bflipper-install` as your normal user. It builds natively under `~/.local/opt/BFlipper`, selects Qt's software scene graph to avoid llvmpipe CPU saturation, keeps the original frameless style while allowing resizing and half-screen snapping, and requests a firmware-compatible 30–45 ms BLE connection interval for stable links.
-- **macOS:** install the official qFlipper app, Homebrew, and Apple Command Line Tools first. Open the downloaded DMG and run `Install-BFlipper.command` from Terminal. It installs Homebrew build dependencies and places BFlipper in `~/Applications/BFlipper.app`.
-- **Windows 11, x64:** install the official qFlipper app, then run `BFlipper-Setup.exe`. It requests administrator access to install Git, Python, Visual Studio C++ Build Tools, and Qt when needed. It builds BFlipper under `%LOCALAPPDATA%\Programs\BFlipper`.
+## Downloads and access
 
-The first installation downloads qFlipper source and build tools and may take several minutes. An internet connection is required. The ARM64 installer removes the old custom interval override and restarts Bluetooth if it restores a prior BlueZ configuration backup. The installers are unsigned community tools, so macOS or Windows may show an operating-system warning before running them.
+This repository is private, so users need repository access to download Actions artifacts or GitHub Releases. A tagged version such as `v1.0.0` publishes direct installer downloads on the [Releases page](https://github.com/Relax0110/BFlipper/releases). The latest successful workflow run provides the newest installer artifacts before a versioned release is published.
 
 ## Connect
 
-On the Flipper Zero, enable **Settings → Bluetooth**. Open BFlipper and choose **Connect over Bluetooth**. Select the Flipper from the scan list. No system-level Bluetooth pairing is needed. DFU recovery remains USB-only.
+On the Flipper Zero, enable **Settings → Bluetooth**. Open BFlipper, choose **Connect over Bluetooth**, and select the Flipper from the scan list. No system-level Bluetooth pairing is required. DFU recovery remains USB-only.
 
-## Build the installer packages
+## Build and license
 
-GitHub Actions packages Debian `.deb` installers for amd64 and ARM64, a macOS `.dmg`, and a Windows `.exe`. These packages contain the patches and bootstrap scripts only. A version tag such as `v1.0.0` publishes the installers as a private GitHub Release.
+GitHub Actions packages Debian installers for amd64 and ARM64, a macOS DMG, and a Windows setup EXE. The installer packages contain BFlipper patches and setup scripts, not prebuilt qFlipper application binaries.
 
-The BLE patch is based on upstream qFlipper revision `1d26683ff5b751f219a4e40443b7c8355eb39469`. qFlipper is distributed under GPL-3.0; see its upstream source and license before redistributing builds.
+The BLE patch is based on upstream qFlipper revision `1d26683ff5b751f219a4e40443b7c8355eb39469`. qFlipper is distributed under GPL-3.0; see the [upstream qFlipper repository](https://github.com/flipperdevices/qFlipper) and its license before redistributing builds.
